@@ -35,13 +35,26 @@ The installer wires the command into `~/.claude/settings.json` and adds `FORCE_H
 
 Then restart Claude Code.
 
+After a global install (`npm i -g @primeinc/claude-statusline`), the short `ccsl` command is also available:
+
+```bash
+ccsl install       # same as: npx @primeinc/claude-statusline install
+ccsl uninstall
+ccsl --help
+```
+
 **Installer flags:**
 
 ```bash
-claude-statusline-install --print           # dry run
-claude-statusline-install --uninstall       # remove our entry, keep everything else
-claude-statusline-install --settings PATH   # non-default settings.json location
-claude-statusline-install --help
+ccsl install --print           # dry run
+ccsl install --force           # overwrite a foreign existing statusLine
+                               # (backs it up to settings.statusLineBackup)
+ccsl install --dest PATH       # non-default script destination
+ccsl install --settings PATH   # non-default settings.json location
+ccsl install --no-copy         # use the installed package's file in place
+                               # (updates flow via `npm update -g`)
+ccsl uninstall                 # restores statusLineBackup if present
+ccsl --help
 ```
 
 **Manual install (no npm):**

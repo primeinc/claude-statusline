@@ -5,7 +5,8 @@
   "bin": {
     "claude-statusline": "./install.js",
     "claude-statusline-render": "./statusline.js",
-    "claude-statusline-install": "./install.js"
+    "claude-statusline-install": "./install.js",
+    "ccsl": "./install.js"
   },
   "main": "statusline.js",
   "files": [
