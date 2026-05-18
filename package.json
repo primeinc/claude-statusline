@@ -1,24 +1,23 @@
 {
   "name": "@primeinc/claude-statusline",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Single-file, zero-dependency Claude Code statusline with OSC 8 hyperlinks and git/worktree awareness.",
   "bin": {
-    "claude-statusline": "./install.js",
-    "claude-statusline-render": "./statusline.js",
-    "claude-statusline-install": "./install.js",
-    "ccsl": "./install.js"
+    "claude-statusline": "cli.js",
+    "claude-statusline-render": "statusline.js",
+    "ccsl": "cli.js"
   },
   "main": "statusline.js",
   "files": [
     "statusline.js",
-    "install.js",
+    "cli.js",
     "README.md",
     "LICENSE",
     "examples"
   ],
   "scripts": {
     "test": "node test/run.js",
-    "install:wire": "node install.js"
+    "wire": "node cli.js install"
   },
   "repository": {
     "type": "git",

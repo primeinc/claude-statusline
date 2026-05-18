@@ -224,7 +224,7 @@ test('no leading space when cwd is empty', () => {
 // ── Installer behaviour ──────────────────────────────────────────────────────
 
 function runInstaller(args, env = {}) {
-  return cp.spawnSync('node', [path.join(__dirname, '..', 'install.js'), ...args], {
+  return cp.spawnSync('node', [path.join(__dirname, '..', 'cli.js'), ...args], {
     env: { ...process.env, ...env },
     encoding: 'utf8',
   });

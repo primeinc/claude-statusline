@@ -28,7 +28,7 @@ Render time on Windows is ~90 ms, dominated by Node startup. The actual JS work 
 **One-liner (recommended):**
 
 ```bash
-npm i -g @primeinc/claude-statusline && claude-statusline-install
+npx @primeinc/claude-statusline install
 ```
 
 The installer wires the command into `~/.claude/settings.json` and adds `FORCE_HYPERLINK=1` to the `env` block (required for Windows Terminal). It's idempotent and preserves all other settings.

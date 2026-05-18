@@ -6,8 +6,8 @@
 //
 // Designed to work three ways with the same UX:
 //   npx @primeinc/claude-statusline install            # one-shot, copies file
-//   npm i -g @primeinc/claude-statusline && claude-statusline-install
-//   git clone … && node install.js                     # from source
+//   npm i -g @primeinc/claude-statusline && ccsl install
+//   git clone … && node cli.js install                 # from source
 //
 // Re-running is idempotent: overwrites the script (so `npx … install` again
 // picks up package updates), preserves all other settings, won't double-add
@@ -34,8 +34,7 @@ const path = require('path');
 function invocationHint() {
   const arg1 = process.argv[1] || '';
   const base = path.basename(arg1, path.extname(arg1));
-  if (base === 'ccsl' || base === 'claude-statusline'
-      || base === 'claude-statusline-install') return base;
+  if (base === 'ccsl' || base === 'claude-statusline') return base;
   return 'npx @primeinc/claude-statusline';
 }
 const CMD = invocationHint();
