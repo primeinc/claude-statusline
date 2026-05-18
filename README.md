@@ -25,11 +25,44 @@ Render time on Windows is ~90 ms, dominated by Node startup. The actual JS work 
 
 ## Install
 
+**One-liner (recommended):**
+
+```bash
+npm i -g @primeinc/claude-statusline && claude-statusline-install
+```
+
+The installer wires the command into `~/.claude/settings.json` and adds `FORCE_HYPERLINK=1` to the `env` block (required for Windows Terminal). It's idempotent and preserves all other settings.
+
+Then restart Claude Code.
+
+**Installer flags:**
+
+```bash
+claude-statusline-install --print           # dry run
+claude-statusline-install --uninstall       # remove our entry, keep everything else
+claude-statusline-install --settings PATH   # non-default settings.json location
+claude-statusline-install --help
+```
+
+**Manual install (no npm):**
+
 1. Drop `statusline.js` somewhere on disk (e.g. `~/.claude/statusline.js`).
-2. Point Claude Code at it in `~/.claude/settings.json`:
+2. Merge `examples/settings.fragment.json` into `~/.claude/settings.json`.
+
+The fragment is plain JSON, deep-mergeable by anything (`jq`, ansible, manual edit):
+
+```bash
+jq -s '.[0] * .[1]' ~/.claude/settings.json examples/settings.fragment.json \
+  | tee ~/.claude/settings.json.new && mv ~/.claude/settings.json.new ~/.claude/settings.json
+```
+
+Or just copy the fields by hand:
 
 ```json
 {
+  "env": {
+    "FORCE_HYPERLINK": "1"
+  },
   "statusLine": {
     "type": "command",
     "command": "node ~/.claude/statusline.js"
@@ -37,17 +70,7 @@ Render time on Windows is ~90 ms, dominated by Node startup. The actual JS work 
 }
 ```
 
-3. (Windows Terminal only) Add `FORCE_HYPERLINK=1` to the `env` block so OSC 8 hyperlinks render. Claude Code's auto-detect list doesn't include `WT_SESSION`:
-
-```json
-{
-  "env": {
-    "FORCE_HYPERLINK": "1"
-  }
-}
-```
-
-That's it. Restart Claude Code.
+Restart Claude Code.
 
 ## Environment variables
 

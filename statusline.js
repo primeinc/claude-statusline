@@ -153,8 +153,11 @@ function currentBranch(gitDir) {
   try {
     const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
     const m    = head.match(/^ref:\s*refs\/heads\/(.+)$/);
-    return m ? m[1] : 'HEAD'; // detached
-  } catch { return ''; }
+    if (m) return { kind: 'branch', name: m[1], sha: '' };
+    // Detached HEAD — `head` is a raw 40-char sha.
+    if (/^[0-9a-f]{7,40}$/.test(head)) return { kind: 'detached', name: '', sha: head.slice(0, 7) };
+    return { kind: 'unknown', name: '', sha: '' };
+  } catch { return { kind: 'unknown', name: '', sha: '' }; }
 }
 
 let repoSlug   = '';
@@ -171,12 +174,14 @@ if (gitDir) {
 
   if (repoSlug) {
     repoUrl = `https://github.com/${repoSlug}`;
-    const branch = currentBranch(gitDir);
-    // Show the chip on every named branch, including the default. Detached
-    // HEAD (`branch === 'HEAD'`) still suppresses — there's no branch to link.
-    if (branch && branch !== 'HEAD') {
-      branchName = branch;
-      branchUrl  = `${repoUrl}/tree/${branch}`;
+    const head = currentBranch(gitDir);
+    if (head.kind === 'branch') {
+      branchName = head.name;
+      branchUrl  = `${repoUrl}/tree/${head.name}`;
+    } else if (head.kind === 'detached') {
+      // Detached HEAD: show `HEAD @abc1234`, link to the commit on GitHub.
+      branchName = `HEAD @${head.sha}`;
+      branchUrl  = `${repoUrl}/commit/${head.sha}`;
     }
   }
 }
@@ -186,15 +191,26 @@ if (gitDir) {
 // Code's auto-detect list doesn't include WT_SESSION, hence FORCE_HYPERLINK=1.
 const env = process.env;
 const tp  = env.TERM_PROGRAM || '';
+// Known hyperlink-capable TERM_PROGRAM values. Matches Claude Code's own
+// internal `PIK` list (read from the binary) plus a few extras the maintainers
+// of those terminals have shipped OSC 8 support for.
+const HYPERLINK_TPS = new Set([
+  'iTerm.app', 'iTerm2',
+  'WezTerm',
+  'vscode',
+  'ghostty',
+  'Hyper',
+  'Apple_Terminal',   // Terminal.app gained OSC 8 support in macOS 14.4
+]);
 const hyperlinks = !!(
   env.FORCE_HYPERLINK ||
   env.WT_SESSION ||                             // Windows Terminal
   env.KITTY_WINDOW_ID ||                        // Kitty
   env.VTE_VERSION ||                            // GNOME Terminal etc.
-  tp === 'iTerm.app' ||
-  tp === 'WezTerm' ||
-  tp === 'vscode' ||
-  tp === 'ghostty'
+  env.ALACRITTY_WINDOW_ID ||                    // Alacritty
+  env.LC_TERMINAL === 'iTerm2' ||
+  env.TERM?.includes('kitty') ||
+  HYPERLINK_TPS.has(tp)
 );
 
 // OSC 8: ESC ] 8 ;; URL BEL  TEXT  ESC ] 8 ;; BEL
