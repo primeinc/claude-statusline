@@ -158,17 +158,22 @@ function copyScript() {
     try { fs.chmodSync(DEST, 0o755); } catch {} // no-op on Windows
     return { copied: true };
   } catch (e) {
-    if (e.code === 'EACCES') bail(
+    // Probe DEST shape — on Windows, copying onto an existing dir is EPERM,
+    // not EISDIR. Same fix for the user regardless of the error code.
+    let destIsDir = false;
+    try { destIsDir = fs.statSync(DEST).isDirectory(); } catch {}
+    if (destIsDir) bail(
+      `${DEST} exists but is a directory, not a file`,
+      `Remove or rename ${DEST}, then re-run: ${CMD} install
+  or pick a different file path:    ${CMD} install --dest <file path>`,
+    );
+    if (e.code === 'EACCES' || e.code === 'EPERM') bail(
       `Permission denied writing ${DEST}`,
       `${CMD} install --dest /path/you/can/write/to/statusline.js`,
     );
     if (e.code === 'ENOSPC') bail(
       `No space left on device when copying to ${DEST}`,
       `Free up disk space and re-run: ${CMD} install`,
-    );
-    if (e.code === 'EISDIR') bail(
-      `${DEST} is a directory, not a file`,
-      `Remove or rename ${DEST}, then re-run: ${CMD} install`,
     );
     bail(`Cannot copy script to ${DEST}: ${e.message}`);
   }
