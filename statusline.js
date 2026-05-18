@@ -157,21 +157,6 @@ function currentBranch(gitDir) {
   } catch { return ''; }
 }
 
-// origin/HEAD may be a loose file, a symbolic ref in packed-refs, or absent.
-function defaultBranch(commonGitDir) {
-  try {
-    const head = fs.readFileSync(path.join(commonGitDir, 'refs/remotes/origin/HEAD'), 'utf8').trim();
-    const m    = head.match(/^ref:\s*refs\/remotes\/origin\/(.+)$/);
-    if (m) return m[1];
-  } catch { /* try packed */ }
-  try {
-    const packed = fs.readFileSync(path.join(commonGitDir, 'packed-refs'), 'utf8');
-    const sym    = packed.match(/^ref:\s*refs\/remotes\/origin\/(.+)$/m);
-    if (sym) return sym[1];
-  } catch { /* no packed-refs */ }
-  return '';
-}
-
 let repoSlug   = '';
 let repoUrl    = '';
 let branchUrl  = '';
@@ -187,8 +172,9 @@ if (gitDir) {
   if (repoSlug) {
     repoUrl = `https://github.com/${repoSlug}`;
     const branch = currentBranch(gitDir);
-    const def    = defaultBranch(common);
-    if (branch && branch !== 'HEAD' && (!def || branch !== def)) {
+    // Show the chip on every named branch, including the default. Detached
+    // HEAD (`branch === 'HEAD'`) still suppresses — there's no branch to link.
+    if (branch && branch !== 'HEAD') {
       branchName = branch;
       branchUrl  = `${repoUrl}/tree/${branch}`;
     }
