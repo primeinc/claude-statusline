@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "description": "Single-file, zero-dependency Claude Code statusline with OSC 8 hyperlinks and git/worktree awareness.",
   "bin": {
-    "claude-statusline": "./statusline.js",
+    "claude-statusline": "./install.js",
+    "claude-statusline-render": "./statusline.js",
     "claude-statusline-install": "./install.js"
   },
   "main": "statusline.js",
