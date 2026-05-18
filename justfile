@@ -28,26 +28,33 @@ publish:
 verify:
     npm view @primeinc/claude-statusline --registry=https://registry.npmjs.org/
 
-# verify the EXACT current package.json version is on the registry; fails loud
-# if it isn't (catches the silent 2FA-not-completed publish failure).
+# Verify the EXACT current package.json version is reachable on npmjs.org.
+# Hits the registry HTTP API directly (curl), bypassing npm's _cacache which
+# can serve a pre-publish manifest for minutes after a successful publish.
 verify-version:
     #!/usr/bin/env bash
     set -euo pipefail
     V=$(node -p "require('./package.json').version")
-    echo "Looking for @primeinc/claude-statusline@${V} on npmjs.org…"
+    URL="https://registry.npmjs.org/@primeinc%2Fclaude-statusline"
+    echo "Looking for @primeinc/claude-statusline@${V} at ${URL}…"
     for i in 1 2 3 4 5; do
-      if npm view "@primeinc/claude-statusline@${V}" version \
-           --prefer-online --registry=https://registry.npmjs.org/ \
-           > /dev/null 2>&1; then
+      LIVE=$(curl -sf "$URL" | node -e "
+        const j = JSON.parse(require('fs').readFileSync(0,'utf8'));
+        process.exit(j.versions && j.versions['${V}'] ? 0 : 1);
+      " && echo yes || echo no)
+      if [ "$LIVE" = "yes" ]; then
         echo "OK: ${V} is live on npmjs.org"
+        # Bust npm's stale manifest cache so the next install can see it.
+        rm -rf "$(npm config get cache)/_cacache" "$(npm config get cache)/_npx" 2>/dev/null || true
+        echo "Cleaned local npm _cacache and _npx so installs see the new version."
         exit 0
       fi
-      echo "  attempt ${i}/5: not yet, waiting 6s for propagation…"
+      echo "  attempt ${i}/5: not in registry response yet, waiting 6s…"
       sleep 6
     done
     echo "ERROR: ${V} not found on npmjs.org after 30s."
-    echo "  Most likely cause: 2FA browser auth wasn't completed during 'npm publish'."
-    echo "  Re-run \`npm publish\` and complete the browser flow before pressing anything."
+    echo "  The publish output said success but the canonical registry"
+    echo "  doesn't have this version. Investigate the npm publish output."
     exit 1
 
 # install the local checkout into ~/.claude/statusline.js + wire settings.json
