@@ -67,7 +67,11 @@ Usage:
 
 Options:
   --print, -n            Dry run — show what would change, write nothing
-  --uninstall            Remove settings entry; delete the copied script
+  --force                Overwrite an existing foreign statusLine entry.
+                         The previous value is saved to settings.statusLineBackup
+                         and restored on uninstall.
+  --uninstall            Remove settings entry; delete the copied script.
+                         If statusLineBackup exists, restore it.
                          (equivalent to running with verb \`uninstall\`)
   --dest <path>          Override script destination
                          (default: ${DEFAULT_DEST})
@@ -139,8 +143,15 @@ if (isUninstall) {
   const isOurs = settingsCmd.includes(destNorm)
               || settingsCmd.includes(sourceNorm)
               || /\/statusline\.js(\s|$)/.test(settingsCmd);
+  let restored = false;
   if (data.statusLine && data.statusLine.type === 'command' && isOurs) {
-    delete data.statusLine;
+    if (data.statusLineBackup) {
+      data.statusLine = data.statusLineBackup;
+      delete data.statusLineBackup;
+      restored = true;
+    } else {
+      delete data.statusLine;
+    }
     touched = true;
   }
   // Intentionally leave env.FORCE_HYPERLINK alone — user may want it for
@@ -160,14 +171,44 @@ if (isUninstall) {
     process.stdout.write('Nothing to uninstall.\n');
   } else {
     process.stdout.write(`Uninstalled.\n`);
-    if (touched) process.stdout.write(`  removed statusLine from ${SETTINGS_PATH}\n`);
+    if (touched && restored) {
+      process.stdout.write(`  restored previous statusLine from statusLineBackup in ${SETTINGS_PATH}\n`);
+    } else if (touched) {
+      process.stdout.write(`  removed statusLine from ${SETTINGS_PATH}\n`);
+    }
     if (removed) process.stdout.write(`  deleted ${DEST}\n`);
     process.stdout.write('Run `/reload-plugins` in Claude Code (or restart) to pick up the change.\n');
   }
   process.exit(0);
 }
 
-// Install path
+// Install path — refuse to clobber a foreign statusLine without --force.
+const FORCE = flag('--force');
+const existingCmd = (data.statusLine && data.statusLine.command || '').replace(/\\/g, '/');
+const destNorm   = DEST.replace(/\\/g, '/');
+const sourceNorm = SOURCE_SCRIPT.replace(/\\/g, '/');
+const isOurs = !data.statusLine
+            || existingCmd.includes(destNorm)
+            || existingCmd.includes(sourceNorm)
+            || /\/statusline\.js(\s|$)/.test(existingCmd);
+const foreign = data.statusLine && !isOurs;
+
+if (foreign && !FORCE) {
+  process.stderr.write(`Refusing to overwrite an existing statusLine entry in ${SETTINGS_PATH}:
+
+  current: ${JSON.stringify(data.statusLine)}
+  ours:    ${JSON.stringify({ type: 'command', command: COMMAND })}
+
+To replace it, re-run with --force. To keep yours, do nothing.
+A copy of the current statusLine will be saved to settings.json under
+"statusLineBackup" when --force is used.
+`);
+  process.exit(2);
+}
+
+if (foreign && FORCE) {
+  data.statusLineBackup = data.statusLine;
+}
 data.statusLine = { type: 'command', command: COMMAND };
 data.env = data.env || {};
 const addedHyperlink = !('FORCE_HYPERLINK' in data.env);
@@ -193,4 +234,5 @@ if (NO_COPY)           process.stdout.write(`  using   ${SOURCE_SCRIPT} in place
 if (settingsChanged)   process.stdout.write(`  wrote   ${SETTINGS_PATH}\n`);
 if (!settingsChanged)  process.stdout.write(`  settings already up to date: ${SETTINGS_PATH}\n`);
 if (addedHyperlink)    process.stdout.write(`  added   env.FORCE_HYPERLINK=1 (needed for Windows Terminal)\n`);
+if (foreign && FORCE)  process.stdout.write(`  backed up previous statusLine -> settings.statusLineBackup\n`);
 process.stdout.write('\nRun `/reload-plugins` in Claude Code (or restart) to pick up the change.\n');

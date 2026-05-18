@@ -221,6 +221,119 @@ test('no leading space when cwd is empty', () => {
   assert(stdout[0] !== ' ', `got leading space: ${JSON.stringify(stdout)}`);
 });
 
+// ── Installer behaviour ──────────────────────────────────────────────────────
+
+function runInstaller(args, env = {}) {
+  return cp.spawnSync('node', [path.join(__dirname, '..', 'install.js'), ...args], {
+    env: { ...process.env, ...env },
+    encoding: 'utf8',
+  });
+}
+
+test('installer refuses to clobber a foreign statusLine without --force', () => {
+  const settings = path.join(os.tmpdir(), `cs-inst-${Date.now()}-${Math.random()}.json`);
+  const dest     = path.join(os.tmpdir(), `cs-dest-${Date.now()}.js`);
+  try {
+    fs.writeFileSync(settings, JSON.stringify({
+      statusLine: { type: 'command', command: 'bash ~/my-cool-statusline.sh' }
+    }, null, 2));
+
+    const r = runInstaller(['install', '--settings', settings, '--dest', dest]);
+    assertEq(r.status, 2, 'should exit 2 to signal refused-to-overwrite');
+    assertMatch(r.stderr, /Refusing to overwrite/);
+    // Settings file unchanged
+    const after = JSON.parse(fs.readFileSync(settings, 'utf8'));
+    assertEq(after.statusLine.command, 'bash ~/my-cool-statusline.sh');
+  } finally {
+    try { fs.unlinkSync(settings); } catch {}
+    try { fs.unlinkSync(dest); } catch {}
+  }
+});
+
+test('installer with --force backs up foreign statusLine to statusLineBackup', () => {
+  const settings = path.join(os.tmpdir(), `cs-inst-${Date.now()}-${Math.random()}.json`);
+  const dest     = path.join(os.tmpdir(), `cs-dest-${Date.now()}.js`);
+  try {
+    const original = { type: 'command', command: 'bash ~/my-cool-statusline.sh' };
+    fs.writeFileSync(settings, JSON.stringify({ statusLine: original }, null, 2));
+
+    const r = runInstaller(['install', '--settings', settings, '--dest', dest, '--force']);
+    assertEq(r.status, 0);
+    const after = JSON.parse(fs.readFileSync(settings, 'utf8'));
+    assertEq(after.statusLineBackup.command, 'bash ~/my-cool-statusline.sh');
+    assert(after.statusLine.command.endsWith(dest.replace(/\\/g, '/')),
+           `expected our command, got: ${after.statusLine.command}`);
+  } finally {
+    try { fs.unlinkSync(settings); } catch {}
+    try { fs.unlinkSync(dest); } catch {}
+  }
+});
+
+test('uninstall restores statusLineBackup if present', () => {
+  const settings = path.join(os.tmpdir(), `cs-inst-${Date.now()}-${Math.random()}.json`);
+  const dest     = path.join(os.tmpdir(), `cs-dest-${Date.now()}.js`);
+  try {
+    fs.writeFileSync(settings, JSON.stringify({
+      statusLine:       { type: 'command', command: `node ${dest.replace(/\\/g, '/')}` },
+      statusLineBackup: { type: 'command', command: 'bash ~/original.sh' },
+    }, null, 2));
+    // Make the dest exist so removeCopiedScript has something to delete.
+    fs.writeFileSync(dest, '#!/usr/bin/env node\n');
+
+    const r = runInstaller(['uninstall', '--settings', settings, '--dest', dest]);
+    assertEq(r.status, 0);
+    const after = JSON.parse(fs.readFileSync(settings, 'utf8'));
+    assertEq(after.statusLine.command, 'bash ~/original.sh');
+    assert(!('statusLineBackup' in after), 'backup should be consumed');
+    assertMatch(r.stdout, /restored previous statusLine/);
+  } finally {
+    try { fs.unlinkSync(settings); } catch {}
+    try { fs.unlinkSync(dest); } catch {}
+  }
+});
+
+test('installer is idempotent (no changes when already wired)', () => {
+  const settings = path.join(os.tmpdir(), `cs-inst-${Date.now()}-${Math.random()}.json`);
+  const dest     = path.join(os.tmpdir(), `cs-dest-${Date.now()}.js`);
+  try {
+    runInstaller(['install', '--settings', settings, '--dest', dest]);
+    const first = fs.readFileSync(settings, 'utf8');
+    const r2 = runInstaller(['install', '--settings', settings, '--dest', dest]);
+    assertEq(r2.status, 0);
+    const second = fs.readFileSync(settings, 'utf8');
+    assertEq(first, second, 'settings.json content should be unchanged on re-run');
+    assertMatch(r2.stdout, /already up to date/);
+  } finally {
+    try { fs.unlinkSync(settings); } catch {}
+    try { fs.unlinkSync(dest); } catch {}
+  }
+});
+
+test('installer preserves all other settings (env, permissions, etc.)', () => {
+  const settings = path.join(os.tmpdir(), `cs-inst-${Date.now()}-${Math.random()}.json`);
+  const dest     = path.join(os.tmpdir(), `cs-dest-${Date.now()}.js`);
+  try {
+    fs.writeFileSync(settings, JSON.stringify({
+      theme: 'dark',
+      permissions: { defaultMode: 'bypassPermissions' },
+      env: { OTEL_TRACES_EXPORTER: 'otlp', FORCE_HYPERLINK: 'existing-value' },
+      enabledPlugins: { foo: true },
+    }, null, 2));
+    runInstaller(['install', '--settings', settings, '--dest', dest]);
+    const after = JSON.parse(fs.readFileSync(settings, 'utf8'));
+    assertEq(after.theme, 'dark');
+    assertEq(after.permissions.defaultMode, 'bypassPermissions');
+    assertEq(after.env.OTEL_TRACES_EXPORTER, 'otlp');
+    assertEq(after.env.FORCE_HYPERLINK, 'existing-value', 'should not overwrite existing FORCE_HYPERLINK');
+    assertEq(after.enabledPlugins.foo, true);
+    assert(after.statusLine.command.includes(dest.replace(/\\/g, '/')),
+           `statusLine should point at dest, got: ${JSON.stringify(after.statusLine)}`);
+  } finally {
+    try { fs.unlinkSync(settings); } catch {}
+    try { fs.unlinkSync(dest); } catch {}
+  }
+});
+
 test('process exits 0 on every fixture (clean termination)', () => {
   for (const fixture of [
     '',
