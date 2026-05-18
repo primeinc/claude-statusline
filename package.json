@@ -1,0 +1,33 @@
+{
+  "name": "claude-statusline",
+  "version": "0.1.0",
+  "description": "Single-file, zero-dependency Claude Code statusline with OSC 8 hyperlinks and git/worktree awareness.",
+  "bin": {
+    "claude-statusline": "./statusline.js"
+  },
+  "main": "statusline.js",
+  "files": [
+    "statusline.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test/run.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/primeinc/claude-statusline.git"
+  },
+  "keywords": [
+    "claude-code",
+    "statusline",
+    "osc8",
+    "terminal",
+    "git"
+  ],
+  "author": "primeinc",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
