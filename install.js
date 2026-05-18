@@ -28,6 +28,25 @@ const fs   = require('fs');
 const os   = require('os');
 const path = require('path');
 
+// Detect how we were invoked so the hint commands we suggest actually work for
+// the user. argv[1] is the script path; on a global install npm rewrites this
+// to the bin name, so basename catches `ccsl`, `claude-statusline`, etc.
+function invocationHint() {
+  const arg1 = process.argv[1] || '';
+  const base = path.basename(arg1, path.extname(arg1));
+  if (base === 'ccsl' || base === 'claude-statusline'
+      || base === 'claude-statusline-install') return base;
+  return 'npx @primeinc/claude-statusline';
+}
+const CMD = invocationHint();
+
+function bail(message, suggestion) {
+  process.stderr.write(`\nERROR: ${message}\n`);
+  if (suggestion) process.stderr.write(`\nTry:\n  ${suggestion}\n`);
+  process.stderr.write(`\nFor help: ${CMD} --help\n`);
+  process.exit(1);
+}
+
 const args = process.argv.slice(2);
 // Support `install`/`uninstall` as positional verbs for npx UX:
 //   npx @primeinc/claude-statusline install
@@ -93,27 +112,66 @@ Resolved paths:
 }
 
 function readSettings() {
+  let raw;
   try {
-    const raw = fs.readFileSync(SETTINGS_PATH, 'utf8');
-    return { existed: true, data: JSON.parse(raw) };
+    raw = fs.readFileSync(SETTINGS_PATH, 'utf8');
   } catch (e) {
     if (e.code === 'ENOENT') return { existed: false, data: {} };
-    throw new Error(`Cannot read ${SETTINGS_PATH}: ${e.message}`);
+    if (e.code === 'EACCES') bail(
+      `Permission denied reading ${SETTINGS_PATH}`,
+      `chmod +r ${SETTINGS_PATH}    # or run as the owning user`,
+    );
+    bail(`Cannot read ${SETTINGS_PATH}: ${e.message}`);
+  }
+  try {
+    return { existed: true, data: JSON.parse(raw) };
+  } catch (e) {
+    bail(
+      `${SETTINGS_PATH} is not valid JSON: ${e.message}`,
+      `Fix the JSON syntax in that file, then re-run: ${CMD} install`,
+    );
   }
 }
 
 function writeSettings(data) {
-  fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(data, null, 2) + '\n');
+  try {
+    fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(data, null, 2) + '\n');
+  } catch (e) {
+    if (e.code === 'EACCES') bail(
+      `Permission denied writing ${SETTINGS_PATH}`,
+      `chmod +w ${SETTINGS_PATH}    # or run as the owning user`,
+    );
+    if (e.code === 'ENOSPC') bail(
+      `No space left on device when writing ${SETTINGS_PATH}`,
+      `Free up disk space and re-run: ${CMD} install`,
+    );
+    bail(`Cannot write ${SETTINGS_PATH}: ${e.message}`);
+  }
 }
 
 function copyScript() {
   if (NO_COPY) return { copied: false };
-  fs.mkdirSync(path.dirname(DEST), { recursive: true });
-  fs.copyFileSync(SOURCE_SCRIPT, DEST);
-  // Best-effort chmod for non-Windows (no-op on Win32, fine).
-  try { fs.chmodSync(DEST, 0o755); } catch {}
-  return { copied: true };
+  try {
+    fs.mkdirSync(path.dirname(DEST), { recursive: true });
+    fs.copyFileSync(SOURCE_SCRIPT, DEST);
+    try { fs.chmodSync(DEST, 0o755); } catch {} // no-op on Windows
+    return { copied: true };
+  } catch (e) {
+    if (e.code === 'EACCES') bail(
+      `Permission denied writing ${DEST}`,
+      `${CMD} install --dest /path/you/can/write/to/statusline.js`,
+    );
+    if (e.code === 'ENOSPC') bail(
+      `No space left on device when copying to ${DEST}`,
+      `Free up disk space and re-run: ${CMD} install`,
+    );
+    if (e.code === 'EISDIR') bail(
+      `${DEST} is a directory, not a file`,
+      `Remove or rename ${DEST}, then re-run: ${CMD} install`,
+    );
+    bail(`Cannot copy script to ${DEST}: ${e.message}`);
+  }
 }
 
 function removeCopiedScript() {
@@ -123,7 +181,11 @@ function removeCopiedScript() {
     return { removed: true };
   } catch (e) {
     if (e.code === 'ENOENT') return { removed: false };
-    throw e;
+    if (e.code === 'EACCES') bail(
+      `Permission denied removing ${DEST}`,
+      `Manually delete the file, or run: ${CMD} uninstall as the owning user`,
+    );
+    bail(`Cannot remove ${DEST}: ${e.message}`);
   }
 }
 
@@ -168,7 +230,12 @@ if (isUninstall) {
   const { removed } = removeCopiedScript();
 
   if (!touched && !removed) {
-    process.stdout.write('Nothing to uninstall.\n');
+    process.stdout.write(`Nothing to uninstall — no @primeinc/claude-statusline entry found in:
+  ${SETTINGS_PATH}
+
+To install:
+  ${CMD} install
+`);
   } else {
     process.stdout.write(`Uninstalled.\n`);
     if (touched && restored) {
@@ -194,14 +261,18 @@ const isOurs = !data.statusLine
 const foreign = data.statusLine && !isOurs;
 
 if (foreign && !FORCE) {
-  process.stderr.write(`Refusing to overwrite an existing statusLine entry in ${SETTINGS_PATH}:
+  process.stderr.write(`\nRefusing to overwrite an existing statusLine entry in:
+  ${SETTINGS_PATH}
 
   current: ${JSON.stringify(data.statusLine)}
   ours:    ${JSON.stringify({ type: 'command', command: COMMAND })}
 
-To replace it, re-run with --force. To keep yours, do nothing.
-A copy of the current statusLine will be saved to settings.json under
-"statusLineBackup" when --force is used.
+To replace it (current entry will be saved to settings.statusLineBackup
+and restored on uninstall):
+
+  ${CMD} install --force
+
+To keep yours, do nothing — no files were modified.
 `);
   process.exit(2);
 }
@@ -235,4 +306,9 @@ if (settingsChanged)   process.stdout.write(`  wrote   ${SETTINGS_PATH}\n`);
 if (!settingsChanged)  process.stdout.write(`  settings already up to date: ${SETTINGS_PATH}\n`);
 if (addedHyperlink)    process.stdout.write(`  added   env.FORCE_HYPERLINK=1 (needed for Windows Terminal)\n`);
 if (foreign && FORCE)  process.stdout.write(`  backed up previous statusLine -> settings.statusLineBackup\n`);
-process.stdout.write('\nRun `/reload-plugins` in Claude Code (or restart) to pick up the change.\n');
+process.stdout.write(`
+Next steps:
+  1. Run \`/reload-plugins\` in Claude Code (or restart) to activate.
+  2. To revert this change later:  ${CMD} uninstall
+  3. To see what the script will render:  echo '{}' | node ${DEST.replace(/\\/g, '/')}
+`);
