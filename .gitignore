@@ -5,5 +5,3 @@ Thumbs.db
 .idea/
 .vscode/
 *.tmp
-# Note: .npmrc is intentionally checked in — it overrides @primeinc scope
-# routing to keep `npm publish` aimed at npmjs.org regardless of user config.
