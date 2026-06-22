@@ -203,12 +203,12 @@ if (isUninstall) {
   const settingsCmd = (data.statusLine && data.statusLine.command || '').replace(/\\/g, '/');
   const destNorm = DEST.replace(/\\/g, '/');
   const sourceNorm = SOURCE_SCRIPT.replace(/\\/g, '/');
-  // Match the configured DEST, the package's source, or a "statusline.js"
-  // tail — covers users who relocated, used --no-copy, or installed via
-  // a different mechanism.
+  // Identity is PATH-based: the configured DEST or the package's own source.
+  // We deliberately do NOT match a bare "statusline.js" tail — that would treat
+  // any unrelated tool's */statusline.js as ours and silently remove it.
+  // (If you relocated the script, run uninstall with the same --dest.)
   const isOurs = settingsCmd.includes(destNorm)
-              || settingsCmd.includes(sourceNorm)
-              || /\/statusline\.js(\s|$)/.test(settingsCmd);
+              || settingsCmd.includes(sourceNorm);
   let restored = false;
   if (data.statusLine && data.statusLine.type === 'command' && isOurs) {
     if (data.statusLineBackup) {
@@ -258,10 +258,11 @@ const FORCE = flag('--force');
 const existingCmd = (data.statusLine && data.statusLine.command || '').replace(/\\/g, '/');
 const destNorm   = DEST.replace(/\\/g, '/');
 const sourceNorm = SOURCE_SCRIPT.replace(/\\/g, '/');
+// Identity is PATH-based — no bare-basename match, so a foreign */statusline.js
+// is treated as foreign (refused without --force, backed up with it).
 const isOurs = !data.statusLine
             || existingCmd.includes(destNorm)
-            || existingCmd.includes(sourceNorm)
-            || /\/statusline\.js(\s|$)/.test(existingCmd);
+            || existingCmd.includes(sourceNorm);
 const foreign = data.statusLine && !isOurs;
 
 if (foreign && !FORCE) {

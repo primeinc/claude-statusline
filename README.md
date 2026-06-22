@@ -14,14 +14,14 @@ Everything is OSC 8 clickable in terminals that honour hyperlinks (Windows Termi
 
 The bundled examples in [Claude Code's statusline docs](https://code.claude.com/docs/en/statusline) shell out to `git`, `gh`, and `jq` on every render. That's ~6 subprocess spawns per refresh. This one:
 
-- Reads `.git/config`, `.git/HEAD`, `packed-refs`, and `commondir` directly — no `git` subprocess
-- Reads context token usage from Claude Code's `context_window.*` stdin payload (added in v2.1.132) — no transcript file walk
-- Resolves git worktrees via `commondir` so `config` and `refs/remotes/origin/HEAD` are found in the common dir, not the per-worktree gitdir
-- Falls back to scanning `packed-refs` when `refs/remotes/origin/HEAD` isn't a loose file
-- Normalises SSH remotes (`git@github.com:owner/repo.git`) to `https://github.com/owner/repo`
+- Reads `.git/config`, `.git/HEAD`, and `commondir` directly — no `git` subprocess
+- Reads context usage from Claude Code's `context_window` stdin payload — no transcript file walk. When the payload omits those fields it shows a visible `[ctx —]` rather than a fabricated default
+- Resolves git worktrees via `commondir` so `config` is read from the common dir, not the per-worktree gitdir
+- Normalises GitHub SSH remotes (`git@github.com:owner/repo.git`) to `https://github.com/owner/repo`
+- Sanitizes every repo-controlled value (paths, branch names, remotes) before terminal emission and percent-encodes all URLs, so a hostile repo can't inject escape sequences
 - Detects hyperlink-capable terminals and emits OSC 8; otherwise falls back to raw URLs
 
-Render time on Windows is ~90 ms, dominated by Node startup. The actual JS work is <5 ms. Claude Code debounces statusline updates at 300 ms, so we're well inside the budget.
+Each behavior above is covered by a fixture in `test/run.js`. Render cost is dominated by Node startup; Claude Code debounces statusline updates at 300 ms.
 
 ## Install
 
@@ -100,16 +100,23 @@ Per render, Claude Code pipes a JSON payload over stdin. This script uses:
 |---|---|
 | `workspace.current_dir` / `cwd` | The `~/path/` segment and the `file://` link target |
 | `model.id` | The short model slug (`opus-4.7`) |
-| `context_window.total_input_tokens` | `[used/total]` numerator |
-| `context_window.context_window_size` | `[used/total]` denominator (handles 200k vs 1M models automatically) |
+| `context_window.used_percentage` / `remaining_percentage` | Context field as `[N%]` — the [documented](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md) contract |
+| `context_window.total_input_tokens` / `context_window_size` | If a build also supplies raw counts, the exact `[used/total]` form is preferred over the percentage |
+
+If none of those fields are present, the context field renders `[ctx —]` — it never fabricates `[0/200k]`.
 
 Then it reads from `.git/`:
 
 | File | Used for |
 |---|---|
-| `HEAD` (or `<worktree>/.git/HEAD` after resolving via `commondir`) | Current branch name |
+| `HEAD` (or `<worktree>/.git/HEAD` after resolving via `commondir`) | Current branch name, or detached-HEAD sha |
 | `config` (in common dir) | Origin remote URL → `owner/repo` |
-| `refs/remotes/origin/HEAD` or `packed-refs` | Default branch — used to suppress the `⎇ branch` chip when you're already on it |
+
+### Git support boundary
+
+Backed by fixtures in `test/run.js`: normal repos, linked worktrees, detached HEAD, GitHub HTTPS and SSH remotes.
+
+Intentionally unsupported (no repo chip is shown): non-GitHub hosts, GitHub Enterprise, `ssh://` URLs, non-`origin` remotes, and refs that live only in `packed-refs` (the `HEAD` symref itself is still read correctly).
 
 ## Triggers and cadence
 
@@ -124,7 +131,7 @@ Triggers are debounced at 300 ms; in-flight scripts are cancelled if a new trigg
 
 ## Hardening
 
-- Pure synchronous I/O — no timers, no promises, no event listeners. Process exits the tick after stdout flush.
+- Pure synchronous I/O — no timers, no promises, no long-lived async work. The only event listener is a fire-once `stdout` 'error' guard. Process exits the tick after stdout flush.
 - Every `fs.readFileSync` for git files is wrapped in `try/catch` — missing files, permission errors, dir-shaped placeholders, and symlink loops all degrade gracefully.
 - `process.stdout.on('error')` guards against EPIPE if Claude Code cancels mid-render.
 - Empty/malformed stdin renders a minimal line, no crash.

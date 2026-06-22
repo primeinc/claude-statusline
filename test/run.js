@@ -91,25 +91,58 @@ const stdoutAsForwardSlash = (s) => s.replace(/\\/g, '/');
 
 process.stdout.write('claude-statusline tests\n');
 
-test('empty stdin renders single context field, no leading spaces', () => {
+test('empty stdin degrades visibly to [ctx —], no fabricated default', () => {
   const { stdout, status } = run('');
   assertEq(status, 0);
-  assertEq(stdout, '[0/200k]\n');
+  assertEq(stdout, '[ctx —]\n');
 });
 
-test('malformed JSON renders gracefully', () => {
+test('malformed JSON renders gracefully (visible degrade, not [0/200k])', () => {
   const { stdout, status } = run('not json {{');
   assertEq(status, 0);
-  assertEq(stdout, '[0/200k]\n');
+  assertEq(stdout, '[ctx —]\n');
 });
 
-test('token formatting: k and M suffixes', () => {
+test('context_window with neither tokens nor percentage -> [ctx —]', () => {
+  const { stdout } = run({ context_window: { resets_at: 'whatever' } });
+  assertMatch(stdout, /\[ctx —\]/, 'unknown context shape must degrade visibly');
+  assertNotMatch(stdout, /\[0\/200k\]/, 'must never fabricate the 200k default');
+});
+
+test('context_window.used_percentage (documented contract) -> [N%]', () => {
+  const { stdout } = run({ context_window: { used_percentage: 42.7, remaining_percentage: 57.3 } });
+  assertMatch(stdout, /\[43%\]/, 'rounds used_percentage');
+});
+
+test('context_window.remaining_percentage only -> derived [N%]', () => {
+  const { stdout } = run({ context_window: { remaining_percentage: 90 } });
+  assertMatch(stdout, /\[10%\]/, 'derives used from remaining');
+});
+
+test('token formatting: k and M suffixes (when raw counts present)', () => {
   const r1 = run({ context_window: { total_input_tokens: 12500, context_window_size: 200000 } });
   assertMatch(r1.stdout, /\[13k\/200k\]/);
   const r2 = run({ context_window: { total_input_tokens: 750000, context_window_size: 1000000 } });
   assertMatch(r2.stdout, /\[750k\/1M\]/);
   const r3 = run({ context_window: { total_input_tokens: 1_200_000, context_window_size: 1_000_000 } });
   assertMatch(r3.stdout, /\[1\.2M\/1M\]/);
+});
+
+test('raw token counts win over percentage when both present', () => {
+  const { stdout } = run({ context_window: { total_input_tokens: 50000, context_window_size: 200000, used_percentage: 25 } });
+  assertMatch(stdout, /\[50k\/200k\]/, 'prefers exact token form');
+  assertNotMatch(stdout, /\[25%\]/);
+});
+
+test('token formatting: 999_999 promotes to 1M (no "1000k" seam)', () => {
+  const { stdout } = run({ context_window: { total_input_tokens: 999999, context_window_size: 1000000 } });
+  assertMatch(stdout, /\[1M\/1M\]/);
+  assertNotMatch(stdout, /1000k/);
+});
+
+test('percentage clamps to documented 0–100 range', () => {
+  assertMatch(run({ context_window: { used_percentage: -5 } }).stdout, /\[0%\]/, 'negative -> 0%');
+  assertMatch(run({ context_window: { used_percentage: 150 } }).stdout, /\[100%\]/, 'over -> 100%');
 });
 
 test('model slug strips claude- prefix, date suffix, and [tag]', () => {
@@ -166,6 +199,73 @@ test('feature branch: /tree/<branch> URL in chip', () => {
   } finally { cleanup(dir); }
 });
 
+test('branch URL escapes URL-significant chars per segment (# -> %23)', () => {
+  const dir = gitFixture({ branch: 'feature/fix#1' });   // # is git-legal, URL-significant
+  try {
+    const { stdout } = run({ workspace: { current_dir: dir } });
+    assertMatch(stdout, /\/tree\/feature\/fix%231/, '# encoded, / preserved as path sep');
+    assertNotMatch(stdout, /\/tree\/feature\/fix#1/, 'raw # must not reach the URL');
+  } finally { cleanup(dir); }
+});
+
+test('repo URL percent-encodes an unquoted special char in slug (? -> %3F)', () => {
+  // `?` is not a git-config comment char, so git stores it verbatim and the
+  // parser accepts it — the slug must still be URL-encoded, like the branch.
+  const dir = gitFixture({ remote: 'https://github.com/owner/re?po.git', branch: 'main' });
+  try {
+    const { stdout } = run({ workspace: { current_dir: dir } });
+    assertMatch(stdout, /github\.com\/owner\/re%3Fpo\b/, '? encoded to %3F in URL target');
+    assertNotMatch(stdout, /github\.com\/owner\/re\?po/, 'no raw ? in URL target');
+  } finally { cleanup(dir); }
+});
+
+test('remote URL with a space: slug space encoded to %20 (valid URL, no raw space)', () => {
+  // git stores a space-bearing URL verbatim (no quoting — only #/; trigger that),
+  // so the parser sees a raw space and the slug encoder must turn it into %20.
+  const dir = gitFixture({ remote: 'https://github.com/ow ner/repo.git', branch: 'main' });
+  try {
+    const { stdout } = run({ workspace: { current_dir: dir } });
+    assertMatch(stdout, /github\.com\/ow%20ner\/repo\b/, 'space -> %20 in URL target');
+    assertNotMatch(stdout, /github\.com\/ow ner/, 'no raw space in URL target');
+  } finally { cleanup(dir); }
+});
+
+test('remote URL git-quotes a "#" -> no repo chip (safe degrade boundary)', () => {
+  // `#` is a git-config comment char, so git wraps the value in quotes. The
+  // parser sees a leading `"`, fails the https://github.com/ prefix check, and
+  // emits no chip rather than a malformed hyperlink. Documented boundary.
+  const dir = gitFixture({ remote: 'https://github.com/owner/re#po.git', branch: 'main' });
+  try {
+    const { stdout } = run({ workspace: { current_dir: dir } });
+    assertNotMatch(stdout, /github\.com/, 'quoted remote must not surface as a chip');
+  } finally { cleanup(dir); }
+});
+
+test('control chars in remote URL: no stray ESC/BEL outside OSC 8 framing', () => {
+  const dir = gitFixture({ remote: 'https://github.com/owner/repo.git', branch: 'main' });
+  try {
+    const cfgPath = path.join(dir, '.git', 'config');
+    const cfg = fs.readFileSync(cfgPath, 'utf8')
+      .replace('https://github.com/owner/repo.git', 'https://github.com/owner/re\x1b]8;;evilpo.git');
+    fs.writeFileSync(cfgPath, cfg);
+    const { stdout } = run({ workspace: { current_dir: dir } }, { FORCE_HYPERLINK: '1' });
+    // Strip our own legitimate OSC 8 framing; nothing with ESC/BEL may remain.
+    const stripped = stdout.replace(/\x1b\]8;;[^\x07]*\x07/g, '');
+    assertNotMatch(stripped, /[\x1b\x07]/, `stray ESC/BEL leaked: ${JSON.stringify(stdout)}`);
+  } finally { cleanup(dir); }
+});
+
+test('control chars in branch (crafted HEAD): no stray ESC/BEL outside framing', () => {
+  // git forbids control chars in real refnames, so simulate a hostile .git/HEAD.
+  const dir = gitFixture({ remote: 'https://github.com/owner/repo.git', branch: 'main' });
+  try {
+    fs.writeFileSync(path.join(dir, '.git', 'HEAD'), 'ref: refs/heads/ev\x1bil\x07\n');
+    const { stdout } = run({ workspace: { current_dir: dir } }, { FORCE_HYPERLINK: '1' });
+    const stripped = stdout.replace(/\x1b\]8;;[^\x07]*\x07/g, '');
+    assertNotMatch(stripped, /[\x1b\x07]/, `stray ESC/BEL leaked: ${JSON.stringify(stdout)}`);
+  } finally { cleanup(dir); }
+});
+
 test('detached HEAD: shows HEAD @<sha7> linking to /commit/', () => {
   const dir = gitFixture({ detached: true });
   try {
@@ -183,6 +283,33 @@ test('OSC 8 disabled when no hyperlink env present', () => {
 test('OSC 8 enabled with FORCE_HYPERLINK=1', () => {
   const { stdout } = run({ workspace: { current_dir: 'D:/x' } }, { FORCE_HYPERLINK: '1' });
   assertMatch(stdout, /\x1b\]8;;file:\/\/\/D:\/x\/\x07/);
+});
+
+test('file URL percent-encodes spaces, #, and unicode in cwd', () => {
+  const { stdout } = run({ workspace: { current_dir: 'D:/my repo#1/café' } }, { FORCE_HYPERLINK: '1' });
+  // space -> %20, # -> %23, é -> %C3%A9 ; no raw space/# survives in the URL target
+  assertMatch(stdout, /file:\/\/\/D:\/my%20repo%231\/caf%C3%A9\//, 'canonical percent-encoding');
+  assertNotMatch(stdout, /file:[^\x07]* repo/, 'no raw space in URL target');
+});
+
+test('control chars in cwd are stripped (no terminal injection)', () => {
+  // A hostile path tries to smuggle BEL + its own OSC 8 sequence. The only raw
+  // ESC/BEL bytes that may reach the terminal are this script's OWN OSC 8
+  // framing: ESC ]8;; URL BEL  label  ESC ]8;; BEL  → exactly 2 ESC, 2 BEL.
+  // The payload's ESC/BEL must be stripped (label) or %-encoded (URL), so any
+  // residual "]8;;evil" is inert plaintext, never an active escape sequence.
+  const evil = 'D:/x\x07\x1b]8;;evil\x07';
+  const { stdout } = run({ workspace: { current_dir: evil } }, { FORCE_HYPERLINK: '1' });
+  const escCount = (stdout.match(/\x1b/g) || []).length;
+  const belCount = (stdout.match(/\x07/g) || []).length;
+  assertEq(escCount, 2, `payload ESC leaked: ${JSON.stringify(stdout)}`);
+  assertEq(belCount, 2, `payload BEL leaked: ${JSON.stringify(stdout)}`);
+});
+
+test('control chars stripped even when hyperlinks are OFF', () => {
+  const evil = 'D:/x\x1b[31mRED';   // raw CSI color injection attempt
+  const { stdout } = run({ workspace: { current_dir: evil } });
+  assertNotMatch(stdout, /\x1b\[31m/, 'CSI sequence must not reach stdout');
 });
 
 test('OSC 8 enabled with WT_SESSION (Windows Terminal)', () => {
@@ -244,6 +371,26 @@ test('installer refuses to clobber a foreign statusLine without --force', () => 
     // Settings file unchanged
     const after = JSON.parse(fs.readFileSync(settings, 'utf8'));
     assertEq(after.statusLine.command, 'bash ~/my-cool-statusline.sh');
+  } finally {
+    try { fs.unlinkSync(settings); } catch {}
+    try { fs.unlinkSync(dest); } catch {}
+  }
+});
+
+test('installer refuses a FOREIGN */statusline.js (basename is not identity)', () => {
+  const settings = path.join(os.tmpdir(), `cs-inst-${Date.now()}-${Math.random()}.json`);
+  const dest     = path.join(os.tmpdir(), `cs-dest-${Date.now()}.js`);
+  try {
+    // An unrelated tool whose script happens to be named statusline.js.
+    fs.writeFileSync(settings, JSON.stringify({
+      statusLine: { type: 'command', command: 'python /opt/someoneelse/statusline.js --their-flag' }
+    }, null, 2));
+
+    const r = runInstaller(['install', '--settings', settings, '--dest', dest]);
+    assertEq(r.status, 2, 'must refuse (exit 2), not silently clobber a foreign statusline.js');
+    assertMatch(r.stderr, /Refusing to overwrite/);
+    const after = JSON.parse(fs.readFileSync(settings, 'utf8'));
+    assertEq(after.statusLine.command, 'python /opt/someoneelse/statusline.js --their-flag', 'foreign entry untouched');
   } finally {
     try { fs.unlinkSync(settings); } catch {}
     try { fs.unlinkSync(dest); } catch {}
@@ -332,6 +479,19 @@ test('installer preserves all other settings (env, permissions, etc.)', () => {
     try { fs.unlinkSync(settings); } catch {}
     try { fs.unlinkSync(dest); } catch {}
   }
+});
+
+test('STATUSLINE_DEBUG=0 does not log; =1 logs', () => {
+  // Redirect HOME/USERPROFILE so we never touch the real ~/.claude log.
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cs-home-'));
+  const logPath  = path.join(fakeHome, '.claude', 'statusline-debug.log');
+  try {
+    run({ cwd: 'D:/x' }, { STATUSLINE_DEBUG: '0', HOME: fakeHome, USERPROFILE: fakeHome });
+    assert(!fs.existsSync(logPath), 'STATUSLINE_DEBUG=0 must NOT write a log');
+
+    run({ cwd: 'D:/x' }, { STATUSLINE_DEBUG: '1', HOME: fakeHome, USERPROFILE: fakeHome });
+    assert(fs.existsSync(logPath), 'STATUSLINE_DEBUG=1 must create the log (dir auto-created)');
+  } finally { cleanup(fakeHome); }
 });
 
 test('process exits 0 on every fixture (clean termination)', () => {
