@@ -4,10 +4,10 @@
 //
 //	<cwd>/ <model> [ctx] <owner/repo> ⎇ <branch> scratch sess
 //
-// Every repo-controlled value (path, branch, remote) is stripped of C0/C1
-// control bytes before it reaches stdout, and every URL is built from
-// percent-encoded segments, so a hostile repository cannot inject terminal
-// escape sequences through the status line.
+// Every repo-controlled value (path, branch, remote) is stripped of control
+// and bidi-override characters before it reaches stdout, and every URL is
+// built from percent-encoded segments, so a hostile repository cannot inject
+// terminal escape sequences through the status line.
 package render
 
 import (
@@ -36,6 +36,15 @@ type Payload struct {
 	} `json:"model"`
 	Workspace struct {
 		CurrentDir string `json:"current_dir"`
+		// Repo is Claude Code's own parse of the origin remote (docs: absent
+		// outside a repository or without origin). When present it is the
+		// identity source, because git resolves include, insteadOf and BOM
+		// cases this program's .git/config reader does not.
+		Repo *struct {
+			Host  string `json:"host"`
+			Owner string `json:"owner"`
+			Name  string `json:"name"`
+		} `json:"repo"`
 	} `json:"workspace"`
 	ContextWindow struct {
 		TotalInputTokens    *float64 `json:"total_input_tokens"`
@@ -45,18 +54,17 @@ type Payload struct {
 	} `json:"context_window"`
 }
 
-// ParsePayload never fails. Empty or malformed input yields the zero Payload,
-// which renders as the visibly degraded line instead of a blank status bar.
-func ParsePayload(r io.Reader) Payload {
-	var p Payload
+// ParsePayload returns the zero Payload and ok=false for empty or malformed
+// input; the caller renders the visibly degraded line and may report why.
+func ParsePayload(r io.Reader) (p Payload, ok bool) {
 	raw, err := io.ReadAll(r)
 	if err != nil {
-		return p
+		return Payload{}, false
 	}
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return Payload{}
+		return Payload{}, false
 	}
-	return p
+	return p, true
 }
 
 // Env is everything the renderer reads from the process, injectable for tests.
@@ -69,7 +77,10 @@ type Env struct {
 
 // OSEnv is the real process environment.
 func OSEnv() Env {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "" // no tilde collapse; every other field still renders
+	}
 	return Env{
 		Getenv: os.Getenv,
 		Home:   home,
@@ -81,13 +92,30 @@ func OSEnv() Env {
 	}
 }
 
+// hyperlinks decides whether to emit OSC 8. FORCE_HYPERLINK is Claude Code's
+// own override (CHANGELOG 2.1.x: "set FORCE_HYPERLINK=0 to opt out"): "0"
+// disables, any other non-empty value enables. Without it, WT_SESSION marks
+// Windows Terminal, which supports OSC 8 but is not auto-detected by Claude
+// Code (observed on this machine; the installer sets FORCE_HYPERLINK=1 for
+// that reason).
+func hyperlinks(env Env) bool {
+	switch v := env.Getenv("FORCE_HYPERLINK"); v {
+	case "":
+		return env.Getenv("WT_SESSION") != ""
+	case "0":
+		return false
+	default:
+		return true
+	}
+}
+
 // Render produces the status line, always terminated by one newline.
 func Render(p Payload, env Env) string {
 	cwd := p.Workspace.CurrentDir
 	if cwd == "" {
 		cwd = p.CWD
 	}
-	links := env.Getenv("FORCE_HYPERLINK") != "" || env.Getenv("WT_SESSION") != ""
+	links := hyperlinks(env)
 
 	var fields []string
 	if cwd != "" {
@@ -97,22 +125,34 @@ func Render(p Payload, env Env) string {
 		fields = append(fields, slug)
 	}
 	fields = append(fields, contextField(p))
-	if cwd != "" {
-		if info, ok := gitinfo.Discover(cwd); ok {
-			if l, ok := gitinfo.Build(info); ok {
-				if links {
-					fields = append(fields, chip(true, l.RepoURL, l.Slug))
-				} else {
-					fields = append(fields, cleanText(l.RepoURL))
-				}
-				if l.RefLabel != "" {
-					fields = append(fields, "⎇ "+chip(links, l.RefURL, l.RefLabel))
-				}
-			}
+	if l, ok := repoLinks(p, cwd); ok {
+		if links {
+			fields = append(fields, chip(true, l.RepoURL, l.Slug))
+		} else {
+			fields = append(fields, cleanText(l.RepoURL))
+		}
+		if l.RefLabel != "" {
+			fields = append(fields, "⎇ "+chip(links, l.RefURL, l.RefLabel))
 		}
 	}
 	fields = append(fields, sessionChips(p, env, links)...)
 	return strings.Join(fields, " ") + "\n"
+}
+
+// repoLinks takes repository identity from the payload when Claude Code
+// supplies it, otherwise from .git/config; HEAD always comes from .git.
+func repoLinks(p Payload, cwd string) (gitinfo.Links, bool) {
+	var info gitinfo.Info
+	if cwd != "" {
+		info, _ = gitinfo.Discover(cwd)
+	}
+	if r := p.Workspace.Repo; r != nil && r.Host != "" && r.Owner != "" && r.Name != "" {
+		return gitinfo.BuildRemote(gitinfo.Remote{Host: strings.ToLower(r.Host), Slug: r.Owner + "/" + r.Name}, info.Head)
+	}
+	if info.RemoteURL == "" {
+		return gitinfo.Links{}, false
+	}
+	return gitinfo.Build(info)
 }
 
 // sessionChips links the two per-session directories Claude Code keeps.
@@ -144,21 +184,27 @@ func sessionChips(p Payload, env Env, links bool) []string {
 	return out
 }
 
-// tempDir mirrors Node's os.tmpdir() precedence, which is what Claude Code
-// used to create the scratchpad: TEMP then TMP on Windows, TMPDIR then TMP
-// then TEMP elsewhere. Go's own os.TempDir checks TMP before TEMP.
+// tempDir mirrors Node's os.tmpdir(), which is what Claude Code used to create
+// the scratchpad (nodejs/node lib/os.js tmpdir): on Windows TEMP, then TMP,
+// then %SystemRoot%\temp; elsewhere libuv's TMPDIR, TMP, TEMP, TEMPDIR, then
+// /tmp. Go's own os.TempDir checks TMP before TEMP, so it is not used.
 func tempDir(env Env) string {
-	keys := []string{"TMPDIR", "TMP", "TEMP"}
 	if env.GOOS == windows {
-		keys = []string{"TEMP", "TMP"}
+		for _, k := range []string{"TEMP", "TMP"} {
+			if v := env.Getenv(k); v != "" {
+				return v
+			}
+		}
+		root := env.Getenv("SystemRoot")
+		if root == "" {
+			root = env.Getenv("windir")
+		}
+		return filepath.Join(root, "temp")
 	}
-	for _, k := range keys {
+	for _, k := range []string{"TMPDIR", "TMP", "TEMP", "TEMPDIR"} {
 		if v := env.Getenv(k); v != "" {
 			return v
 		}
-	}
-	if env.GOOS == windows {
-		return os.TempDir()
 	}
 	return "/tmp"
 }
@@ -192,18 +238,23 @@ func equal(a, b string, fold bool) bool {
 
 // fileURL builds a file:// URL for a directory with every path segment
 // percent-encoded (spaces, #, %, ?, non-ASCII, control bytes). A trailing "/"
-// marks the directory (RFC 8089).
+// marks the directory (RFC 8089). UNC paths keep the server as URL host.
 func fileURL(p string) string {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		abs = p
 	}
 	s := strings.TrimSuffix(filepath.ToSlash(abs), "/")
+	prefix := "file:///"
+	if strings.HasPrefix(s, "//") {
+		prefix = "file://"
+		s = strings.TrimPrefix(s, "//")
+	}
 	parts := strings.Split(strings.TrimPrefix(s, "/"), "/")
 	for i := range parts {
 		parts[i] = url.PathEscape(parts[i])
 	}
-	return "file:///" + strings.Join(parts, "/") + "/"
+	return prefix + strings.Join(parts, "/") + "/"
 }
 
 // modelSlug shortens a model id for display:
@@ -257,12 +308,13 @@ func contextField(p Payload) string {
 	return "[ctx —]"
 }
 
-// fmtTokens: 12500 -> 13k, 999999 -> 1M, 1200000 -> 1.2M. The M boundary sits
-// at 999500 so rounding never produces "1000k".
+// fmtTokens: 12500 -> 13k, 999999 -> 1M, 1200000 -> 1.2M, 999500000 -> 999.5M.
+// The M boundary sits at 999500 so rounding never produces "1000k".
 func fmtTokens(n float64) string {
 	switch {
 	case n >= 999_500:
-		return strconv.FormatFloat(n/1_000_000, 'g', 3, 64) + "M"
+		m := math.Round(n/100_000) / 10
+		return strconv.FormatFloat(m, 'f', -1, 64) + "M"
 	case n >= 1_000:
 		return strconv.Itoa(int(math.Round(n/1_000))) + "k"
 	}
@@ -274,10 +326,18 @@ func clampPct(v float64) string {
 	return strconv.Itoa(int(math.Round(math.Max(0, math.Min(100, v)))))
 }
 
-// cleanText strips C0 and C1 control bytes.
+// cleanText strips C0 and C1 control bytes plus the zero-width and
+// bidirectional-override characters that can reorder or hide terminal text:
+// U+200B–U+200F, U+2028–U+202E, U+2060–U+2064, U+2066–U+2069, U+FEFF.
 func cleanText(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+		switch {
+		case r < 0x20, r >= 0x7f && r <= 0x9f,
+			r >= 0x200b && r <= 0x200f,
+			r >= 0x2028 && r <= 0x202e,
+			r >= 0x2060 && r <= 0x2064,
+			r >= 0x2066 && r <= 0x2069,
+			r == 0xfeff:
 			return -1
 		}
 		return r

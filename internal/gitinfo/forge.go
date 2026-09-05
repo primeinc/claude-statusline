@@ -16,8 +16,8 @@ var forges = map[string]forge{
 	// GitHub: /tree/<branch>, /commit/<sha>.
 	"github.com": {branch: "/tree/", commit: "/commit/"},
 	// Forgejo at git.title.dev: /src/branch/<branch> (modules/git/ref.go:205)
-	// and /commit/<sha> (routers/web/web.go:1654), Forgejo revision
-	// d7471ea487788c5d6f711a61436a45bf47601948.
+	// and /commit/<sha> (routers/web/web.go:1781, the repository route; 1654
+	// is the wiki's), Forgejo revision d7471ea487788c5d6f711a61436a45bf47601948.
 	"git.title.dev": {branch: "/src/branch/", commit: "/commit/"},
 }
 
@@ -36,6 +36,12 @@ func Build(info Info) (l Links, ok bool) {
 	if !ok {
 		return Links{}, false
 	}
+	return BuildRemote(r, info.Head)
+}
+
+// BuildRemote is Build for an already-resolved remote identity.
+func BuildRemote(r Remote, head Head) (l Links, ok bool) {
+	info := Info{Head: head}
 	f, ok := forges[r.Host]
 	if !ok {
 		return Links{}, false

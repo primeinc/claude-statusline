@@ -1,6 +1,7 @@
 package gitinfo
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
 )
@@ -40,7 +41,7 @@ func parseURL(rawURL string) (*url.URL, error) {
 
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("remote url: %w", err)
 	}
 
 	switch u.Scheme {

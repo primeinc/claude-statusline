@@ -6,7 +6,10 @@ package settings
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -19,8 +22,8 @@ import (
 // did not write. Install refuses it unless forced.
 var ErrForeign = errors.New("settings.json has a statusLine entry from another tool")
 
-// ErrInvalidJSON means settings.json exists but does not parse.
-var ErrInvalidJSON = errors.New("settings.json is not valid JSON")
+// ErrInvalidJSON means settings.json exists but is not a JSON object.
+var ErrInvalidJSON = errors.New("settings.json is not a JSON object")
 
 // Result reports what Install or Uninstall changed.
 type Result struct {
@@ -30,6 +33,18 @@ type Result struct {
 	Removed        bool   // Uninstall removed statusLine
 	ReplacedLegacy string // the Node installer's command that Install replaced, "" otherwise
 }
+
+// legacyMarker is the header comment of the Node script the previous
+// installer copied to ~/.claude/statusline.js. A command string alone cannot
+// distinguish that installer's entry from a hand-written one at the same
+// path; the file content can.
+const legacyMarker = "claude-statusline"
+
+// Injected for tests.
+var (
+	readFile = os.ReadFile
+	homeDir  = os.UserHomeDir
+)
 
 // Command is the settings.json statusLine.command for an executable path:
 // forward slashes (Git Bash consumes backslashes) and double quotes when the
@@ -51,27 +66,59 @@ func Install(current []byte, command string, force bool) (Result, error) {
 		return Result{}, err
 	}
 	existing := gjson.GetBytes(in, "statusLine")
-	foreign := existing.Exists() && !isOurs(existing.Get("command").String(), command)
+	prev := existing.Get("command").String()
+	legacy := existing.Exists() && IsLegacy(prev)
+	foreign := existing.Exists() && !legacy && !isOurs(prev, command)
 	if foreign && !force {
 		return Result{}, ErrForeign
 	}
-	out := in
-	if foreign {
-		out, _ = sjson.DeleteBytes(out, "statusLine")
+	keepExtras := existing.Exists() && !foreign && !legacy
+	out, err := setStatusLine(in, command, keepExtras)
+	if err != nil {
+		return Result{}, err
 	}
-	out, _ = sjson.SetBytes(out, "statusLine.type", "command")
-	out, _ = sjson.SetBytes(out, "statusLine.command", command)
 	res := Result{}
-	if prev := existing.Get("command").String(); IsLegacy(prev) {
+	if legacy {
 		res.ReplacedLegacy = prev
 	}
 	if !gjson.GetBytes(out, "env.FORCE_HYPERLINK").Exists() {
-		out, _ = sjson.SetBytes(out, "env.FORCE_HYPERLINK", "1")
+		if out, err = sjson.SetBytes(out, "env.FORCE_HYPERLINK", "1"); err != nil {
+			return Result{}, fmt.Errorf("editing env.FORCE_HYPERLINK: %w", err)
+		}
 		res.AddedHyperlink = true
 	}
 	res.Data = format(out)
 	res.Changed = !bytes.Equal(res.Data, current)
 	return res, nil
+}
+
+// setStatusLine points statusLine at command. With keepExtras (the entry is
+// already ours) only type and command are touched, so user additions such as
+// padding survive. Otherwise the object is replaced whole, in place, so its
+// position in the file does not move.
+func setStatusLine(in []byte, command string, keepExtras bool) ([]byte, error) {
+	if keepExtras {
+		out, err := sjson.SetBytes(in, "statusLine.type", "command")
+		if err != nil {
+			return nil, fmt.Errorf("editing statusLine.type: %w", err)
+		}
+		if out, err = sjson.SetBytes(out, "statusLine.command", command); err != nil {
+			return nil, fmt.Errorf("editing statusLine.command: %w", err)
+		}
+		return out, nil
+	}
+	raw, err := json.Marshal(struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+	}{"command", command})
+	if err != nil {
+		return nil, fmt.Errorf("encoding statusLine: %w", err)
+	}
+	out, err := sjson.SetRawBytes(in, "statusLine", raw)
+	if err != nil {
+		return nil, fmt.Errorf("editing statusLine: %w", err)
+	}
+	return out, nil
 }
 
 // Uninstall removes statusLine when it points at command. env.FORCE_HYPERLINK
@@ -85,7 +132,10 @@ func Uninstall(current []byte, command string) (Result, error) {
 	if !existing.Exists() || !isOurs(existing.Get("command").String(), command) {
 		return Result{Data: current}, nil
 	}
-	out, _ := sjson.DeleteBytes(in, "statusLine")
+	out, err := sjson.DeleteBytes(in, "statusLine")
+	if err != nil {
+		return Result{}, fmt.Errorf("editing statusLine: %w", err)
+	}
 	res := Result{Data: format(out), Removed: true}
 	res.Changed = !bytes.Equal(res.Data, current)
 	return res, nil
@@ -96,29 +146,49 @@ func Existing(current []byte) string {
 	return gjson.GetBytes(current, "statusLine").Raw
 }
 
-// isOurs is a path test, never a basename test: an unrelated tool's
-// */statusline.exe must stay foreign. The previous installer of this project
-// wrote "node <dir>/.claude/statusline.js"; that exact shape is ours too, so
-// upgrading does not need --force.
+// isOurs is an exact comparison of the command strings (slashes and quotes
+// normalised). A substring or basename test would claim a wrapper that
+// mentions this binary, or an unrelated tool's */claude-statusline.exe.
 func isOurs(existingCommand, command string) bool {
-	existing := filepath.ToSlash(existingCommand)
-	if strings.Contains(existing, strings.Trim(filepath.ToSlash(command), `"`)) {
-		return true
-	}
-	return IsLegacy(existingCommand)
+	return canon(existingCommand) == canon(command)
 }
 
-// IsLegacy reports whether command is the Node installer's own entry.
+func canon(c string) string {
+	return strings.Trim(filepath.ToSlash(strings.TrimSpace(c)), `"`)
+}
+
+// IsLegacy reports whether command is the previous Node installer's entry:
+// "node <path>" where <path> is a file carrying that script's header. The
+// path shape alone is what the Claude Code docs suggest for any Node script,
+// so the file content is the deciding evidence.
 func IsLegacy(command string) bool {
-	c := filepath.ToSlash(command)
-	return strings.HasPrefix(c, "node ") && strings.HasSuffix(c, "/.claude/statusline.js")
+	rest, found := strings.CutPrefix(strings.TrimSpace(command), "node ")
+	if !found {
+		return false
+	}
+	p := canon(rest)
+	if !strings.HasSuffix(p, "/statusline.js") {
+		return false
+	}
+	if after, ok := strings.CutPrefix(p, "~/"); ok {
+		home, err := homeDir()
+		if err != nil {
+			return false
+		}
+		p = filepath.Join(home, after)
+	}
+	content, err := readFile(p)
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(content, []byte(legacyMarker))
 }
 
 func normalize(current []byte) ([]byte, error) {
 	if len(bytes.TrimSpace(current)) == 0 {
 		return []byte("{}"), nil
 	}
-	if !gjson.ValidBytes(current) {
+	if !gjson.ValidBytes(current) || !gjson.ParseBytes(current).IsObject() {
 		return nil, ErrInvalidJSON
 	}
 	return current, nil

@@ -1,0 +1,7 @@
+Usage of install:
+  -force
+    	replace a foreign statusLine
+  -print
+    	dry run
+  -settings string
+    	settings.json path
