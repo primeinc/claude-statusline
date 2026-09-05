@@ -1,7 +1,8 @@
-node_modules/
+/claude-statusline
+/claude-statusline.exe
+/.bench-payload.json
 *.log
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
-*.tmp

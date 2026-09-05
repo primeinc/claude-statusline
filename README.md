@@ -1,134 +1,102 @@
 # claude-statusline
 
-A single-file, zero-dependency [Claude Code](https://code.claude.com/) statusline.
-
-Renders one tight line:
+One-line [Claude Code](https://code.claude.com/docs/en/statusline) status line, one Go binary, no `git` subprocess.
 
 ```
-~/dev/claude-statusline/ opus-4.7 [63k/200k] primeinc/claude-statusline ⎇ feature/foo
+~/dev/claude-statusline/ fable-5.1 [43%] primeinc/claude-statusline ⎇ go-rewrite scratch sess
 ```
 
-Everything is OSC 8 clickable in terminals that honour hyperlinks (Windows Terminal, iTerm2, WezTerm, Kitty, vscode, Ghostty). The `~/path` opens the folder; `primeinc/claude-statusline` opens the repo; `⎇ feature/foo` opens the branch view.
+Every chip is an OSC 8 hyperlink when hyperlinks are on:
 
-## Why a custom statusline
+| chip | opens |
+|---|---|
+| `~/path/` | the working directory |
+| `owner/repo` | the repository on its forge |
+| `⎇ branch` | the branch view, or the commit when HEAD is detached |
+| `scratch` | this session's scratchpad: `<tmp>/claude/<project>/<session_id>/scratchpad` |
+| `sess` | this session's folder under `~/.claude/projects/` (subagents, tool results); the project folder until it exists |
 
-The bundled examples in [Claude Code's statusline docs](https://code.claude.com/docs/en/statusline) shell out to `git`, `gh`, and `jq` on every render. That's ~6 subprocess spawns per refresh. This one:
-
-- Reads `.git/config`, `.git/HEAD`, `packed-refs`, and `commondir` directly — no `git` subprocess
-- Reads context token usage from Claude Code's `context_window.*` stdin payload (added in v2.1.132) — no transcript file walk
-- Resolves git worktrees via `commondir` so `config` and `refs/remotes/origin/HEAD` are found in the common dir, not the per-worktree gitdir
-- Falls back to scanning `packed-refs` when `refs/remotes/origin/HEAD` isn't a loose file
-- Normalises SSH remotes (`git@github.com:owner/repo.git`) to `https://github.com/owner/repo`
-- Detects hyperlink-capable terminals and emits OSC 8; otherwise falls back to raw URLs
-
-Render time on Windows is ~90 ms, dominated by Node startup. The actual JS work is <5 ms. Claude Code debounces statusline updates at 300 ms, so we're well inside the budget.
+Hyperlinks: `FORCE_HYPERLINK` is Claude Code's own override and wins when set (`0` disables, anything else enables). Unset, `WT_SESSION` (Windows Terminal, observed on this machine, not auto-detected by Claude Code) enables them. Off, the line shows the repo URL and branch name as plain text and omits `scratch` and `sess`.
 
 ## Install
 
-**One-liner (recommended):**
+Until a tagged release exists on `main`, install from a checkout:
 
 ```bash
-npx @primeinc/claude-statusline install
+git clone https://github.com/primeinc/claude-statusline
+cd claude-statusline
+go install .
+claude-statusline install
 ```
 
-The installer wires the command into `~/.claude/settings.json` and adds `FORCE_HYPERLINK=1` to the `env` block (required for Windows Terminal). It's idempotent and preserves all other settings.
+`install` writes `statusLine.command` (this binary's path) and `env.FORCE_HYPERLINK=1` into `~/.claude/settings.json`, preserving every other key and the file's order. The whole file is re-emitted with two-space indentation and LF line endings. The write goes through a temp file and rename (a symlinked settings.json is followed to its target; a dangling link is replaced by a file; a hard link would be severed). It recognises its own entry exactly (no substring or basename matching; case-insensitive on Windows) and the previous Node installer's entry only when the file at `~/.claude/statusline.js` begins with that script's header. Any other existing `statusLine` is refused unless `--force`.
 
-Then restart Claude Code.
+`uninstall` removes the entry, restores a `statusLineBackup` left by the previous Node installer if one exists, and leaves `env.FORCE_HYPERLINK` alone because Claude Code's own links use it.
 
-After a global install (`npm i -g @primeinc/claude-statusline`), the short `ccsl` command is also available:
-
-```bash
-ccsl install       # same as: npx @primeinc/claude-statusline install
-ccsl uninstall
-ccsl --help
+```
+claude-statusline install [--force] [--print] [--settings PATH]
+claude-statusline uninstall [--print] [--settings PATH]
 ```
 
-**Installer flags:**
+Exit codes: 0 ok, 1 error, 2 refused to overwrite a foreign `statusLine`. `CLAUDE_SETTINGS` overrides the settings path.
 
-```bash
-ccsl install --print           # dry run
-ccsl install --force           # overwrite a foreign existing statusLine
-                               # (backs it up to settings.statusLineBackup)
-ccsl install --dest PATH       # non-default script destination
-ccsl install --settings PATH   # non-default settings.json location
-ccsl install --no-copy         # use the installed package's file in place
-                               # (updates flow via `npm update -g`)
-ccsl uninstall                 # restores statusLineBackup if present
-ccsl --help
-```
+## Input
 
-**Manual install (no npm):**
+Fields read from the stdin payload: `workspace.current_dir` (or `cwd`), `workspace.repo`, `model.id`, `context_window.*`, `session_id`, `transcript_path`. The documented full payload is a test fixture (`internal/render/testdata/docs-payload.json`).
 
-1. Drop `statusline.js` somewhere on disk (e.g. `~/.claude/statusline.js`).
-2. Merge `examples/settings.fragment.json` into `~/.claude/settings.json`.
+Context field precedence: `[used/total]` when both token counts are present, else `[N%]` from `used_percentage` or `remaining_percentage`, else `[ctx —]`. Nothing is fabricated.
 
-The fragment is plain JSON, deep-mergeable by anything (`jq`, ansible, manual edit):
+Model slug: `claude-sonnet-4-6-20251001` → `sonnet-4.6`, `claude-opus-4-7[1m]` → `opus-4.7`, `claude-opus-5` → `opus-5`. Ids in other shapes (older `claude-3-5-sonnet-…`, Bedrock or Vertex prefixes) render with only the `claude-` prefix and date removed.
 
-```bash
-jq -s '.[0] * .[1]' ~/.claude/settings.json examples/settings.fragment.json \
-  | tee ~/.claude/settings.json.new && mv ~/.claude/settings.json.new ~/.claude/settings.json
-```
+A payload with one mistyped field keeps every other field; only unparseable input renders the bare `[ctx —]` line, with a note on stderr (`claude --debug` logs it).
 
-Or just copy the fields by hand:
+## Git
 
-```json
-{
-  "env": {
-    "FORCE_HYPERLINK": "1"
-  },
-  "statusLine": {
-    "type": "command",
-    "command": "node ~/.claude/statusline.js"
-  }
-}
-```
+Repository identity comes from the payload's `workspace.repo` when Claude Code supplies it, which resolves `include`, `url.insteadOf` and other cases git handles. Otherwise `remote.origin.url` is read from `.git/config` with a git-config parser (gcfg); a config git itself would reject, or one with a UTF-8 BOM, renders no repo chip on that path. HEAD is always read from `.git`: the per-worktree directory for linked worktrees, with `config` from `commondir`. Detached HEAD renders `HEAD @<sha7>`.
 
-Restart Claude Code.
+Forges: `github.com` (`/tree/<branch>`, `/commit/<sha>`) and `git.title.dev` (Forgejo: `/src/branch/<branch>`, `/commit/<sha>`). Remote forms: `https://`, `ssh://`, `git://`, `git+ssh://`, `git+https://`, and `git@host:owner/repo.git`. Other hosts render no repo chip.
 
-## Environment variables
+Every repo-controlled string is stripped of Unicode control (Cc) and format (Cf) characters plus line and paragraph separators, and every URL is built from percent-encoded segments, before it reaches the terminal.
 
-| Var | Effect |
+## Cost
+
+Claude Code on Windows runs the command through the Git Bash launcher named by `CLAUDE_CODE_GIT_BASH_PATH` (`C:\Git\bin\bash.exe`), which spawns `usr\bin\bash.exe`, which runs the command: three fresh processes per render, observed with a PID-logging wrapper. `just bench` measures through that exact launcher (hyperfine, 50 runs, warmup 5):
+
+| command under `C:/Git/bin/bash.exe -c` | mean |
 |---|---|
-| `FORCE_HYPERLINK=1` | Forces Claude Code (and this script) to emit OSC 8 hyperlinks even when the terminal isn't in the auto-detect list. Required for Windows Terminal. |
-| `STATUSLINE_DEBUG=1` | Appends a JSON line per render to `~/.claude/statusline-debug.log` with the stdin payload summary, every hyperlink-related env var, and the exact bytes emitted. Off by default. |
+| `true` | 28.2 ms |
+| `claude-statusline` (full render) | 39.3 ms |
 
-## What it shows
+The `true` row is the floor any command pays under that launcher, a persistent daemon's client included. Not built.
 
-Per render, Claude Code pipes a JSON payload over stdin. This script uses:
+## Development
 
-| Field | Used for |
-|---|---|
-| `workspace.current_dir` / `cwd` | The `~/path/` segment and the `file://` link target |
-| `model.id` | The short model slug (`opus-4.7`) |
-| `context_window.total_input_tokens` | `[used/total]` numerator |
-| `context_window.context_window_size` | `[used/total]` denominator (handles 200k vs 1M models automatically) |
+```
+just test           # go test ./...
+just lint           # go vet + golangci-lint (.golangci.yml: default all, reasoned disables)
+just fmt            # gofmt + goimports
+just check          # test + lint + formatting diff
+just bench          # hyperfine through the Git Bash launcher
+just real-configs 'C:/Users/you/dev/*/.git/config'   # parse every real .git/config with the shipped reader
+```
 
-Then it reads from `.git/`:
+CI (`.github/workflows/ci.yml`) declares vet and tests on Windows and Ubuntu, and golangci-lint pinned to the local version, on pull requests and pushes to `main`.
 
-| File | Used for |
-|---|---|
-| `HEAD` (or `<worktree>/.git/HEAD` after resolving via `commondir`) | Current branch name |
-| `config` (in common dir) | Origin remote URL → `owner/repo` |
-| `refs/remotes/origin/HEAD` or `packed-refs` | Default branch — used to suppress the `⎇ branch` chip when you're already on it |
+## Provenance
 
-## Triggers and cadence
-
-[Per the docs](https://code.claude.com/docs/en/statusline#how-status-lines-work), Claude Code reruns the statusline:
-
-- after each new assistant message
-- after `/compact`
-- on permission-mode change
-- on vim-mode toggle
-
-Triggers are debounced at 300 ms; in-flight scripts are cancelled if a new trigger fires. No `refreshInterval` is needed for this script — all data is push-driven.
-
-## Hardening
-
-- Pure synchronous I/O — no timers, no promises, no event listeners. Process exits the tick after stdout flush.
-- Every `fs.readFileSync` for git files is wrapped in `try/catch` — missing files, permission errors, dir-shaped placeholders, and symlink loops all degrade gracefully.
-- `process.stdout.on('error')` guards against EPIPE if Claude Code cancels mid-render.
-- Empty/malformed stdin renders a minimal line, no crash.
-- The debug-log append is also wrapped — disk-full or unwritable HOME won't break the render.
+| concern | source | revision | relation |
+|---|---|---|---|
+| payload contract | code.claude.com/docs/en/statusline | fetched 2026-09-04; fixture in testdata | contract |
+| `FORCE_HYPERLINK=0` opt-out | anthropics/claude-code CHANGELOG.md | entry under 2.1.217 | contract |
+| scratchpad and session dirs | observed on this machine, 61 projects | 2026-09-04 | observed, not documented upstream |
+| Windows shell chain | observed: PID-logging wrapper, 3 sessions | 2026-09-04 | observed; docs state Git Bash |
+| remote URL normalisation | cli/cli `git/url.go` | ad2a338 | adapted |
+| git-config parsing | go-git/gcfg | v1.5.1-0.20230307220236-3a3c6141e376 | dependency |
+| settings.json editing | tidwall/sjson, gjson, pretty | v1.2.5, v1.19.0, v1.2.1 | dependency |
+| Forgejo URL scheme | forgejo/forgejo `modules/git/ref.go:205`, `routers/web/web.go:1781` | d7471ea | cited |
+| lint baseline | golangci-lint `.golangci.reference.yml`; cli/cli, oh-my-posh configs | 2b2fbaf; ad2a338, bc0845d | adapted |
+| CI | golangci-lint docs `welcome/install/ci.md`; golangci-lint-action `action.yml` | 2b2fbaf; 2ed87ef | adapted |
+| daemon architecture | oh-my-posh `src/cli/serve.go` | bc0845d | observed, rejected: its shell owns the daemon's stdin; Claude Code spawns a fresh shell per render |
 
 ## License
 
