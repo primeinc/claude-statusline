@@ -29,16 +29,16 @@ func payload(cwd string) Payload {
 
 func TestParsePayload(t *testing.T) {
 	for name, in := range map[string]string{"empty": "", "garbage": "not json {{", "array": "[]"} {
-		p, ok := ParsePayload(strings.NewReader(in))
-		if ok || p.CWD != "" || p.SessionID != "" {
-			t.Errorf("%s: expected zero payload and ok=false, got ok=%v %+v", name, ok, p)
+		p, err := ParsePayload(strings.NewReader(in))
+		if err == nil || p.CWD != "" || p.SessionID != "" {
+			t.Errorf("%s: expected zero payload and ok=false, got err=%v %+v", name, err, p)
 		}
 	}
 	const in = `{"cwd":"D:/x","session_id":"s","transcript_path":"t","model":{"id":"claude-opus-4-7"},` +
 		`"context_window":{"used_percentage":null,"total_input_tokens":5}}`
-	p, ok := ParsePayload(strings.NewReader(in))
-	if !ok || p.CWD != "D:/x" || p.SessionID != "s" || p.TranscriptPath != "t" || p.Model.ID != "claude-opus-4-7" {
-		t.Fatalf("scalar fields not parsed: ok=%v %+v", ok, p)
+	p, err := ParsePayload(strings.NewReader(in))
+	if err != nil || p.CWD != "D:/x" || p.SessionID != "s" || p.TranscriptPath != "t" || p.Model.ID != "claude-opus-4-7" {
+		t.Fatalf("scalar fields not parsed: err=%v %+v", err, p)
 	}
 	if p.ContextWindow.UsedPercentage != nil || p.ContextWindow.TotalInputTokens == nil || *p.ContextWindow.TotalInputTokens != 5 {
 		t.Fatalf("null must stay nil and numbers must parse: %+v", p.ContextWindow)
@@ -47,9 +47,9 @@ func TestParsePayload(t *testing.T) {
 
 func TestParsePayloadKeepsFieldsOnTypeError(t *testing.T) {
 	// One mistyped field must not blank the rest of the line.
-	p, ok := ParsePayload(strings.NewReader(`{"cwd":"D:/x","model":{"id":5},"context_window":{"used_percentage":42}}`))
-	if ok || p.CWD != "D:/x" || p.ContextWindow.UsedPercentage == nil || *p.ContextWindow.UsedPercentage != 42 {
-		t.Fatalf("type error must keep the other fields: ok=%v %+v", ok, p)
+	p, err := ParsePayload(strings.NewReader(`{"cwd":"D:/x","model":{"id":5},"context_window":{"used_percentage":42}}`))
+	if err == nil || p.CWD != "D:/x" || p.ContextWindow.UsedPercentage == nil || *p.ContextWindow.UsedPercentage != 42 {
+		t.Fatalf("type error must keep the other fields: err=%v %+v", err, p)
 	}
 }
 
@@ -62,8 +62,8 @@ func TestDocumentedPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	p, ok := ParsePayload(f)
-	if !ok {
+	p, err := ParsePayload(f)
+	if err != nil {
 		t.Fatal("documented payload must parse")
 	}
 	if p.SessionID != "abc123..." || p.TranscriptPath != "/path/to/transcript.jsonl" || p.Model.ID != "claude-opus-5" {

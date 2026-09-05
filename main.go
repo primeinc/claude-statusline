@@ -73,9 +73,9 @@ func renderCmd(stdin io.Reader, stdout, stderr io.Writer) (code int) {
 			code = exitOK
 		}
 	}()
-	p, ok := render.ParsePayload(stdin)
-	if !ok {
-		fmt.Fprintln(stderr, "claude-statusline: stdin payload did not fully decode; rendering what parsed")
+	p, err := render.ParsePayload(stdin)
+	if err != nil {
+		fmt.Fprintf(stderr, "claude-statusline: %v; rendering what parsed\n", err)
 	}
 	fmt.Fprint(stdout, render.Render(p, render.OSEnv()))
 	return exitOK

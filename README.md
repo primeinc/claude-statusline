@@ -29,7 +29,7 @@ go install .
 claude-statusline install
 ```
 
-`install` writes `statusLine.command` (this binary's path) and `env.FORCE_HYPERLINK=1` into `~/.claude/settings.json`, preserving every other key and the file's order. The whole file is re-emitted with two-space indentation and LF line endings. The write goes through a temp file and rename (a symlinked settings.json is followed; a hard link would be severed). It recognises its own entry exactly (no substring or basename matching; case-insensitive on Windows) and the previous Node installer's entry only when the file at `~/.claude/statusline.js` begins with that script's header. Any other existing `statusLine` is refused unless `--force`.
+`install` writes `statusLine.command` (this binary's path) and `env.FORCE_HYPERLINK=1` into `~/.claude/settings.json`, preserving every other key and the file's order. The whole file is re-emitted with two-space indentation and LF line endings. The write goes through a temp file and rename (a symlinked settings.json is followed to its target; a dangling link is replaced by a file; a hard link would be severed). It recognises its own entry exactly (no substring or basename matching; case-insensitive on Windows) and the previous Node installer's entry only when the file at `~/.claude/statusline.js` begins with that script's header. Any other existing `statusLine` is refused unless `--force`.
 
 `uninstall` removes the entry, restores a `statusLineBackup` left by the previous Node installer if one exists, and leaves `env.FORCE_HYPERLINK` alone because Claude Code's own links use it.
 
@@ -80,7 +80,7 @@ just bench          # hyperfine through the Git Bash launcher
 just real-configs 'C:/Users/you/dev/*/.git/config'   # parse every real .git/config with the shipped reader
 ```
 
-CI (`.github/workflows/ci.yml`) runs vet and tests on Windows and Ubuntu, and golangci-lint pinned to the local version.
+CI (`.github/workflows/ci.yml`) declares vet and tests on Windows and Ubuntu, and golangci-lint pinned to the local version, on pull requests and pushes to `main`.
 
 ## Provenance
 
