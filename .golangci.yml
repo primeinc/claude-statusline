@@ -1,0 +1,50 @@
+# golangci-lint v2. Linter set adapted from cli/cli (.golangci.yml @ ad2a338)
+# and oh-my-posh (src/.golangci.yml @ bc0845d); both run default: none with a
+# curated list. Reference for every key: golangci-lint .golangci.reference.yml.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - copyloopvar
+    - errcheck
+    - gocritic
+    - goconst
+    - govet
+    - ineffassign
+    - misspell
+    - nolintlint
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+  settings:
+    goconst:
+      ignore-tests: true
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-tags:
+        - experimental
+      disabled-checks:
+        - hugeParam # one render per process; copying a 112-byte payload is not a cost
+    revive:
+      rules:
+        - name: var-naming
+          disabled: true
+  exclusions:
+    generated: lax
+    presets:
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
