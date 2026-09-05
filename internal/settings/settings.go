@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -34,11 +35,12 @@ type Result struct {
 	ReplacedLegacy string // the Node installer's command that Install replaced, "" otherwise
 }
 
-// legacyMarker is the header comment of the Node script the previous
-// installer copied to ~/.claude/statusline.js. A command string alone cannot
-// distinguish that installer's entry from a hand-written one at the same
-// path; the file content can.
-const legacyMarker = "claude-statusline"
+// legacyHeader is how the Node script the previous installer copied to
+// ~/.claude/statusline.js begins (its first two lines). A command string
+// alone cannot distinguish that installer's entry from a hand-written one at
+// the same path; the file's header can. Only a prefix match counts: a foreign
+// script that merely mentions this project somewhere is not ours.
+const legacyHeader = "#!/usr/bin/env node\n// claude-statusline "
 
 // Injected for tests.
 var (
@@ -121,7 +123,9 @@ func setStatusLine(in []byte, command string, keepExtras bool) ([]byte, error) {
 	return out, nil
 }
 
-// Uninstall removes statusLine when it points at command. env.FORCE_HYPERLINK
+// Uninstall removes statusLine when it points at command. If the previous
+// Node installer left a statusLineBackup (its --force saved the entry it
+// replaced), that entry is restored in statusLine's place. env.FORCE_HYPERLINK
 // is left alone: Claude Code's own file links use it too.
 func Uninstall(current []byte, command string) (Result, error) {
 	in, err := normalize(current)
@@ -132,8 +136,15 @@ func Uninstall(current []byte, command string) (Result, error) {
 	if !existing.Exists() || !isOurs(existing.Get("command").String(), command) {
 		return Result{Data: current}, nil
 	}
-	out, err := sjson.DeleteBytes(in, "statusLine")
-	if err != nil {
+	var out []byte
+	if backup := gjson.GetBytes(in, "statusLineBackup"); backup.Exists() {
+		if out, err = sjson.SetRawBytes(in, "statusLine", []byte(backup.Raw)); err != nil {
+			return Result{}, fmt.Errorf("restoring statusLineBackup: %w", err)
+		}
+		if out, err = sjson.DeleteBytes(out, "statusLineBackup"); err != nil {
+			return Result{}, fmt.Errorf("removing statusLineBackup: %w", err)
+		}
+	} else if out, err = sjson.DeleteBytes(in, "statusLine"); err != nil {
 		return Result{}, fmt.Errorf("editing statusLine: %w", err)
 	}
 	res := Result{Data: format(out), Removed: true}
@@ -147,10 +158,15 @@ func Existing(current []byte) string {
 }
 
 // isOurs is an exact comparison of the command strings (slashes and quotes
-// normalised). A substring or basename test would claim a wrapper that
-// mentions this binary, or an unrelated tool's */claude-statusline.exe.
+// normalised, case folded on Windows where paths are). A substring or
+// basename test would claim a wrapper that mentions this binary, or an
+// unrelated tool's */claude-statusline.exe.
 func isOurs(existingCommand, command string) bool {
-	return canon(existingCommand) == canon(command)
+	a, b := canon(existingCommand), canon(command)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 func canon(c string) string {
@@ -181,7 +197,8 @@ func IsLegacy(command string) bool {
 	if err != nil {
 		return false
 	}
-	return bytes.Contains(content, []byte(legacyMarker))
+	content = bytes.ReplaceAll(content, []byte("\r\n"), []byte("\n"))
+	return bytes.HasPrefix(content, []byte(legacyHeader))
 }
 
 func normalize(current []byte) ([]byte, error) {

@@ -45,6 +45,14 @@ func TestParsePayload(t *testing.T) {
 	}
 }
 
+func TestParsePayloadKeepsFieldsOnTypeError(t *testing.T) {
+	// One mistyped field must not blank the rest of the line.
+	p, ok := ParsePayload(strings.NewReader(`{"cwd":"D:/x","model":{"id":5},"context_window":{"used_percentage":42}}`))
+	if ok || p.CWD != "D:/x" || p.ContextWindow.UsedPercentage == nil || *p.ContextWindow.UsedPercentage != 42 {
+		t.Fatalf("type error must keep the other fields: ok=%v %+v", ok, p)
+	}
+}
+
 // TestDocumentedPayload parses the full JSON schema from
 // https://code.claude.com/docs/en/statusline (testdata/docs-payload.json,
 // fetched 2026-09-04) and renders it, so a contract change shows up here.
@@ -211,8 +219,8 @@ func TestRenderStripsControlChars(t *testing.T) {
 }
 
 func TestCleanTextStripsBidiAndZeroWidth(t *testing.T) {
-	in := "a\u202eb\u200bc\u2028d\u2066e\ufefff\u2060g"
-	if got := cleanText(in); got != "abcdefg" {
+	in := "a\u202eb\u200bc\u2028d\u2066e\ufefff\u2060g\U000E0001h\U000E0041i\u061cj\ufff9k\u00adl\u2029m"
+	if got := cleanText(in); got != "abcdefghijklm" {
 		t.Fatalf("got %q", got)
 	}
 	if got := cleanText("café ⎇ 日本"); got != "café ⎇ 日本" {
@@ -264,11 +272,7 @@ func TestRenderPrefersPayloadRepo(t *testing.T) {
 	// payload's workspace.repo is authoritative and HEAD still comes from .git.
 	dir := gitDir(t, "[remote \"origin\"]\n\turl = gh:owner/repo.git\n", "ref: refs/heads/main\n")
 	p := payload(dir)
-	p.Workspace.Repo = &struct {
-		Host  string `json:"host"`
-		Owner string `json:"owner"`
-		Name  string `json:"name"`
-	}{Host: "GitHub.com", Owner: "owner", Name: "repo"}
+	p.Workspace.Repo = &Repo{Host: "GitHub.com", Owner: "owner", Name: "repo"}
 	out := Render(p, env(map[string]string{"FORCE_HYPERLINK": "1"}, ""))
 	for _, want := range []string{
 		"\x1b]8;;https://github.com/owner/repo\aowner/repo\x1b]8;;\a",

@@ -75,7 +75,7 @@ func renderCmd(stdin io.Reader, stdout, stderr io.Writer) (code int) {
 	}()
 	p, ok := render.ParsePayload(stdin)
 	if !ok {
-		fmt.Fprintln(stderr, "claude-statusline: stdin was not a JSON payload; rendering the degraded line")
+		fmt.Fprintln(stderr, "claude-statusline: stdin payload did not fully decode; rendering what parsed")
 	}
 	fmt.Fprint(stdout, render.Render(p, render.OSEnv()))
 	return exitOK
@@ -92,6 +92,7 @@ type settingsFlags struct {
 func parseSettingsFlags(name string, args []string, allowForce bool, stdout, stderr io.Writer) (f settingsFlags, ok bool, code int) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() {} // usage() below is the one help text; flag's own must not print
 	fs.StringVar(&f.path, "settings", "", "settings.json path")
 	fs.BoolVar(&f.print, "print", false, "dry run")
 	if allowForce {
@@ -146,7 +147,17 @@ func readSettings(path string, stderr io.Writer) ([]byte, bool) {
 // writeSettings writes to a temp file beside the target and renames it into
 // place, so a crash mid-write cannot leave a truncated settings.json and a
 // concurrent save by Claude Code sees either the old file or the new one.
+// A symlinked settings.json is followed so the target is replaced, not the
+// link; the existing file mode is kept. A hard link to settings.json is
+// severed by the rename: atomicity is chosen over that layout.
 func writeSettings(path string, data []byte, stderr io.Writer) bool {
+	mode := os.FileMode(0o644)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+		if st, err := os.Stat(path); err == nil {
+			mode = st.Mode().Perm()
+		}
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		fmt.Fprintf(stderr, "cannot create %s: %v\n", dir, err)
@@ -158,16 +169,20 @@ func writeSettings(path string, data []byte, stderr io.Writer) bool {
 		return false
 	}
 	name := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
+	fail := func(what string, err error) bool {
 		_ = tmp.Close()
 		_ = os.Remove(name)
-		fmt.Fprintf(stderr, "cannot write %s: %v\n", name, err)
+		fmt.Fprintf(stderr, "cannot %s %s: %v\n", what, name, err)
 		return false
 	}
+	if _, err := tmp.Write(data); err != nil {
+		return fail("write", err)
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		return fail("chmod", err)
+	}
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(name)
-		fmt.Fprintf(stderr, "cannot close %s: %v\n", name, err)
-		return false
+		return fail("close", err)
 	}
 	if err := os.Rename(name, path); err != nil {
 		_ = os.Remove(name)

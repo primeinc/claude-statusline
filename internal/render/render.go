@@ -12,6 +12,7 @@ package render
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"net/url"
@@ -19,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/primeinc/claude-statusline/internal/gitinfo"
 )
@@ -40,11 +42,7 @@ type Payload struct {
 		// outside a repository or without origin). When present it is the
 		// identity source, because git resolves include, insteadOf and BOM
 		// cases this program's .git/config reader does not.
-		Repo *struct {
-			Host  string `json:"host"`
-			Owner string `json:"owner"`
-			Name  string `json:"name"`
-		} `json:"repo"`
+		Repo *Repo `json:"repo"`
 	} `json:"workspace"`
 	ContextWindow struct {
 		TotalInputTokens    *float64 `json:"total_input_tokens"`
@@ -54,17 +52,32 @@ type Payload struct {
 	} `json:"context_window"`
 }
 
-// ParsePayload returns the zero Payload and ok=false for empty or malformed
-// input; the caller renders the visibly degraded line and may report why.
+// Repo is the payload's workspace.repo object.
+type Repo struct {
+	Host  string `json:"host"`
+	Owner string `json:"owner"`
+	Name  string `json:"name"`
+}
+
+// ParsePayload returns ok=false for input that is not a JSON payload; the
+// caller renders whatever was decoded and may report why. A syntax error
+// yields the zero Payload. A type error on one field (encoding/json keeps
+// decoding and reports the earliest such error) keeps every other field.
 func ParsePayload(r io.Reader) (p Payload, ok bool) {
 	raw, err := io.ReadAll(r)
 	if err != nil {
 		return Payload{}, false
 	}
-	if err := json.Unmarshal(raw, &p); err != nil {
+	err = json.Unmarshal(raw, &p)
+	var typeErr *json.UnmarshalTypeError
+	switch {
+	case err == nil:
+		return p, true
+	case errors.As(err, &typeErr):
+		return p, false
+	default:
 		return Payload{}, false
 	}
-	return p, true
 }
 
 // Env is everything the renderer reads from the process, injectable for tests.
@@ -326,18 +339,14 @@ func clampPct(v float64) string {
 	return strconv.Itoa(int(math.Round(math.Max(0, math.Min(100, v)))))
 }
 
-// cleanText strips C0 and C1 control bytes plus the zero-width and
-// bidirectional-override characters that can reorder or hide terminal text:
-// U+200B–U+200F, U+2028–U+202E, U+2060–U+2064, U+2066–U+2069, U+FEFF.
+// cleanText strips control characters (Unicode Cc: C0, DEL, C1) and format
+// characters (Unicode Cf: zero-width joiners and spaces, bidi overrides and
+// isolates, tag characters, interlinear annotations, BOM, soft hyphen), the
+// classes that can inject escapes into or reorder and hide terminal text.
+// Line and paragraph separators (U+2028, U+2029, category Zl/Zp) go too.
 func cleanText(s string) string {
 	return strings.Map(func(r rune) rune {
-		switch {
-		case r < 0x20, r >= 0x7f && r <= 0x9f,
-			r >= 0x200b && r <= 0x200f,
-			r >= 0x2028 && r <= 0x202e,
-			r >= 0x2060 && r <= 0x2064,
-			r >= 0x2066 && r <= 0x2069,
-			r == 0xfeff:
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == 0x2028 || r == 0x2029 {
 			return -1
 		}
 		return r

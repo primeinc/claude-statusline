@@ -23,7 +23,7 @@ func TestRenderNeverFails(t *testing.T) {
 	if out.String() != "[ctx —]\n" {
 		t.Fatalf("malformed input must degrade visibly, got %q", out.String())
 	}
-	if !strings.Contains(errOut.String(), "not a JSON payload") {
+	if !strings.Contains(errOut.String(), "did not fully decode") {
 		t.Fatalf("malformed input must be reported on stderr, got %q", errOut.String())
 	}
 }
@@ -90,6 +90,30 @@ func TestInstallThenUninstallRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWriteFollowsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.json")
+	link := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(target, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable here: %v", err)
+	}
+	var out, errOut bytes.Buffer
+	if code := run([]string{"install", "--settings", link}, nil, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	st, err := os.Lstat(link)
+	if err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the symlink must survive the write: %v %v", st, err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || !strings.Contains(string(data), `"statusLine"`) {
+		t.Fatalf("the link target must receive the content: %q %v", data, err)
+	}
+}
+
 func TestPrintWritesNothing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	var out, errOut bytes.Buffer
@@ -128,8 +152,12 @@ func TestFlagsAndUsage(t *testing.T) {
 		t.Fatalf("help: %d %q", code, out.String())
 	}
 	out.Reset()
+	errOut.Reset()
 	if code := run([]string{"install", "-h"}, nil, &out, &errOut); code != 0 || !strings.Contains(out.String(), "install") {
 		t.Fatalf("install -h: %d %q", code, out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("-h must print one help text, on stdout only; stderr got %q", errOut.String())
 	}
 	if code := run([]string{"bogus"}, nil, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "unknown command") {
 		t.Fatalf("unknown: %d %q", code, errOut.String())

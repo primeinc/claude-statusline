@@ -7,7 +7,7 @@ linters:
   disable:
     - depguard # no import allow-list is needed for four direct dependencies
     - exhaustruct # zero-valued struct fields are the point of Payload/Env
-    - gochecknoglobals # settings.readFile/homeDir are injected for tests on purpose
+    - gochecknoglobals # settings.readFile/homeDir are test injection points; gitinfo.forges is a constant table
     - godox # no TODO policy
     - gomodguard # deprecated in 2.12; gomodguard_v2 stays on
     - gosmopolitan # one test asserts that non-ASCII survives cleanText; that is the point
@@ -27,7 +27,11 @@ linters:
       max-complexity: 15
       skip-tests: true # table tests are long by construction
     errcheck:
-      check-blank: true # `_ = f()` is a discarded error, not an accepted one
+      # `_ = f()` is a discarded error, not an accepted one. The
+      # std-error-handling preset below still exempts Close/Remove/print
+      # calls, which is where the remaining blank assignments live (cleanup
+      # after a failed write).
+      check-blank: true
       check-type-assertions: true
     gocritic:
       enabled-tags:
@@ -45,13 +49,9 @@ linters:
         - G204 # tests spawn git with fixed argv
         - G301 # 0755 directories: ~/.claude and test fixtures are user-owned
         - G304 # reading files by computed path is what this program does
-        - G306 # 0644 settings.json matches what Claude Code writes
+        - G306 # 0644 test fixtures; the real settings.json keeps its existing mode
     lll:
       line-length: 180
-    revive:
-      rules:
-        - name: var-naming
-          disabled: true
   exclusions:
     generated: lax
     presets:
