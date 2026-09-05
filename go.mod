@@ -5,7 +5,7 @@ go 1.26
 require (
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376
 	github.com/tidwall/gjson v1.19.0
-	github.com/tidwall/pretty v1.2.0
+	github.com/tidwall/pretty v1.2.1
 	github.com/tidwall/sjson v1.2.5
 )
 

@@ -28,18 +28,53 @@ func payload(cwd string) Payload {
 }
 
 func TestParsePayload(t *testing.T) {
-	for name, in := range map[string]string{"empty": "", "garbage": "not json {{", "object": "{}"} {
-		p := ParsePayload(strings.NewReader(in))
-		if p != (Payload{}) {
-			t.Errorf("%s: expected zero payload, got %+v", name, p)
+	for name, in := range map[string]string{"empty": "", "garbage": "not json {{", "array": "[]"} {
+		p, ok := ParsePayload(strings.NewReader(in))
+		if ok || p.CWD != "" || p.SessionID != "" {
+			t.Errorf("%s: expected zero payload and ok=false, got ok=%v %+v", name, ok, p)
 		}
 	}
-	p := ParsePayload(strings.NewReader(`{"cwd":"D:/x","session_id":"s","transcript_path":"t","model":{"id":"claude-opus-4-7"},"context_window":{"used_percentage":null,"total_input_tokens":5}}`))
-	if p.CWD != "D:/x" || p.SessionID != "s" || p.TranscriptPath != "t" || p.Model.ID != "claude-opus-4-7" {
-		t.Fatalf("scalar fields not parsed: %+v", p)
+	const in = `{"cwd":"D:/x","session_id":"s","transcript_path":"t","model":{"id":"claude-opus-4-7"},` +
+		`"context_window":{"used_percentage":null,"total_input_tokens":5}}`
+	p, ok := ParsePayload(strings.NewReader(in))
+	if !ok || p.CWD != "D:/x" || p.SessionID != "s" || p.TranscriptPath != "t" || p.Model.ID != "claude-opus-4-7" {
+		t.Fatalf("scalar fields not parsed: ok=%v %+v", ok, p)
 	}
 	if p.ContextWindow.UsedPercentage != nil || p.ContextWindow.TotalInputTokens == nil || *p.ContextWindow.TotalInputTokens != 5 {
 		t.Fatalf("null must stay nil and numbers must parse: %+v", p.ContextWindow)
+	}
+}
+
+// TestDocumentedPayload parses the full JSON schema from
+// https://code.claude.com/docs/en/statusline (testdata/docs-payload.json,
+// fetched 2026-09-04) and renders it, so a contract change shows up here.
+func TestDocumentedPayload(t *testing.T) {
+	f, err := os.Open(filepath.Join("testdata", "docs-payload.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	p, ok := ParsePayload(f)
+	if !ok {
+		t.Fatal("documented payload must parse")
+	}
+	if p.SessionID != "abc123..." || p.TranscriptPath != "/path/to/transcript.jsonl" || p.Model.ID != "claude-opus-5" {
+		t.Fatalf("scalars: %+v", p)
+	}
+	if r := p.Workspace.Repo; r == nil || r.Host != "github.com" || r.Owner != "anthropics" || r.Name != "claude-code" {
+		t.Fatalf("workspace.repo: %+v", p.Workspace.Repo)
+	}
+	if got := contextField(p); got != "[16k/200k]" {
+		t.Fatalf("context: %q", got)
+	}
+	out := Render(p, env(map[string]string{"FORCE_HYPERLINK": "1"}, ""))
+	for _, want := range []string{"opus-5 [16k/200k]", "\x1b]8;;https://github.com/anthropics/claude-code\aanthropics/claude-code\x1b]8;;\a"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in %q", want, out)
+		}
+	}
+	if strings.Contains(out, "⎇") {
+		t.Fatalf("no .git under /current/working/directory, so no branch chip: %q", out)
 	}
 }
 
@@ -57,6 +92,7 @@ func TestContextField(t *testing.T) {
 		{"tokens M", new(750000.0), new(1000000.0), nil, nil, "[750k/1M]"},
 		{"tokens over", new(1200000.0), new(1000000.0), nil, nil, "[1.2M/1M]"},
 		{"999999 promotes to 1M", new(999999.0), new(1000000.0), nil, nil, "[1M/1M]"},
+		{"large stays decimal", new(999500000.0), new(1000000.0), nil, nil, "[999.5M/1M]"},
 		{"zero before first response", new(0.0), new(200000.0), nil, nil, "[0/200k]"},
 		{"tokens win over pct", new(50000.0), new(200000.0), new(25.0), nil, "[50k/200k]"},
 		{"tokens need both halves", new(50000.0), nil, new(25.0), nil, "[25%]"},
@@ -110,14 +146,23 @@ func TestDisplayPath(t *testing.T) {
 }
 
 func TestFileURL(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("drive-letter expectations")
-	}
+	// Absolute inputs so filepath.Abs is a no-op on every platform.
 	cases := map[string]string{
-		"D:/x":                 "file:///D:/x/",
-		"D:\\x\\":              "file:///D:/x/",
-		"D:/my repo#1/café":    "file:///D:/my%20repo%231/caf%C3%A9/",
-		"D:/x\x07\x1b]8;;evil": "file:///D:/x%07%1B%5D8%3B%3Bevil/",
+		"/x":                 "file:///x/",
+		"/my repo#1/café":    "file:///my%20repo%231/caf%C3%A9/",
+		"/x\x07\x1b]8;;evil": "file:///x%07%1B%5D8%3B%3Bevil/",
+		"/srv/a%b?c/":        "file:///srv/a%25b%3Fc/",
+		"//server/share/dir": "file://server/share/dir/",
+	}
+	if runtime.GOOS == windows {
+		cases = map[string]string{
+			"D:/x":                   "file:///D:/x/",
+			"D:\\x\\":                "file:///D:/x/",
+			"D:/my repo#1/café":      "file:///D:/my%20repo%231/caf%C3%A9/",
+			"D:/x\x07\x1b]8;;evil":   "file:///D:/x%07%1B%5D8%3B%3Bevil/",
+			"D:/srv/a%b?c/":          "file:///D:/srv/a%25b%3Fc/",
+			"\\\\server\\share\\dir": "file://server/share/dir/",
+		}
 	}
 	for in, want := range cases {
 		if got := fileURL(in); got != want {
@@ -126,28 +171,52 @@ func TestFileURL(t *testing.T) {
 	}
 }
 
-func TestRenderHyperlinkGate(t *testing.T) {
-	p := payload("D:/x")
+func TestHyperlinkGate(t *testing.T) {
+	cases := []struct {
+		force, wt string
+		want      bool
+	}{
+		{"", "", false},
+		{"", "abc", true},
+		{"1", "", true},
+		{"true", "", true},
+		{"0", "", false},
+		{"0", "abc", false}, // explicit opt-out wins over terminal detection
+	}
+	for _, c := range cases {
+		e := env(map[string]string{"FORCE_HYPERLINK": c.force, "WT_SESSION": c.wt}, "")
+		if got := hyperlinks(e); got != c.want {
+			t.Errorf("FORCE_HYPERLINK=%q WT_SESSION=%q: got %v want %v", c.force, c.wt, got, c.want)
+		}
+	}
+	p := payload("/x")
 	if out := Render(p, env(nil, "")); strings.Contains(out, "\x1b]8") {
 		t.Fatalf("no hyperlink env must mean no OSC 8: %q", out)
 	}
-	for _, v := range []string{"FORCE_HYPERLINK", "WT_SESSION"} {
-		out := Render(p, env(map[string]string{v: "1"}, ""))
-		if !strings.Contains(out, "\x1b]8;;file:///D:/x/\a") {
-			t.Fatalf("%s must enable OSC 8: %q", v, out)
-		}
+	if out := Render(p, env(map[string]string{"FORCE_HYPERLINK": "1"}, "")); !strings.Contains(out, "\x1b]8;;file://") {
+		t.Fatalf("FORCE_HYPERLINK=1 must enable OSC 8: %q", out)
 	}
 }
 
 func TestRenderStripsControlChars(t *testing.T) {
-	evil := payload("D:/x\x07\x1b]8;;evil\x07")
+	evil := payload("/x\x07\x1b]8;;evil\x07")
 	out := Render(evil, env(map[string]string{"FORCE_HYPERLINK": "1"}, ""))
 	if esc, bel := strings.Count(out, "\x1b"), strings.Count(out, "\a"); esc != 2 || bel != 2 {
 		t.Fatalf("only our own OSC 8 framing may reach stdout (2 ESC, 2 BEL), got %d/%d: %q", esc, bel, out)
 	}
-	out = Render(payload("D:/x\x1b[31mRED"), env(nil, ""))
+	out = Render(payload("/x\x1b[31mRED"), env(nil, ""))
 	if strings.Contains(out, "\x1b[31m") {
 		t.Fatalf("CSI must be stripped even without hyperlinks: %q", out)
+	}
+}
+
+func TestCleanTextStripsBidiAndZeroWidth(t *testing.T) {
+	in := "a\u202eb\u200bc\u2028d\u2066e\ufefff\u2060g"
+	if got := cleanText(in); got != "abcdefg" {
+		t.Fatalf("got %q", got)
+	}
+	if got := cleanText("café ⎇ 日本"); got != "café ⎇ 日本" {
+		t.Fatalf("printable non-ASCII must survive: %q", got)
 	}
 }
 
@@ -190,6 +259,30 @@ func TestRenderRepoChips(t *testing.T) {
 	}
 }
 
+func TestRenderPrefersPayloadRepo(t *testing.T) {
+	// .git/config holds an alias git would resolve via url.insteadOf; the
+	// payload's workspace.repo is authoritative and HEAD still comes from .git.
+	dir := gitDir(t, "[remote \"origin\"]\n\turl = gh:owner/repo.git\n", "ref: refs/heads/main\n")
+	p := payload(dir)
+	p.Workspace.Repo = &struct {
+		Host  string `json:"host"`
+		Owner string `json:"owner"`
+		Name  string `json:"name"`
+	}{Host: "GitHub.com", Owner: "owner", Name: "repo"}
+	out := Render(p, env(map[string]string{"FORCE_HYPERLINK": "1"}, ""))
+	for _, want := range []string{
+		"\x1b]8;;https://github.com/owner/repo\aowner/repo\x1b]8;;\a",
+		"\x1b]8;;https://github.com/owner/repo/tree/main\amain\x1b]8;;\a",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in %q", want, out)
+		}
+	}
+	if out := Render(payload(dir), env(map[string]string{"FORCE_HYPERLINK": "1"}, "")); strings.Contains(out, "github.com") {
+		t.Fatalf("without workspace.repo the alias is unresolvable, so no chip: %q", out)
+	}
+}
+
 func TestRenderHostileHead(t *testing.T) {
 	dir := gitDir(t, "[remote \"origin\"]\n\turl = https://github.com/owner/repo.git\n", "ref: refs/heads/ev\x1bil\a\n")
 	out := Render(payload(dir), env(map[string]string{"FORCE_HYPERLINK": "1"}, ""))
@@ -202,12 +295,15 @@ func TestRenderHostileHead(t *testing.T) {
 }
 
 func TestRenderHostileRemoteURL(t *testing.T) {
-	// gcfg rejects control bytes in a value, so the repo chip degrades to
-	// absent; either way nothing hostile may reach stdout.
+	// gcfg passes the control byte through; net/url rejects it, so the repo
+	// chip degrades to absent. Nothing hostile may reach stdout either way.
 	dir := gitDir(t, "[remote \"origin\"]\n\turl = https://github.com/owner/re\x1b]8;;evilpo.git\n", "ref: refs/heads/main\n")
 	out := Render(payload(dir), env(map[string]string{"FORCE_HYPERLINK": "1"}, ""))
 	if stripped := stripOSC8(out); strings.ContainsAny(stripped, "\x1b\a") {
 		t.Fatalf("stray ESC/BEL leaked from config: %q", out)
+	}
+	if strings.Contains(out, "github.com") {
+		t.Fatalf("a remote URL with control bytes must not produce a chip: %q", out)
 	}
 }
 
@@ -215,7 +311,7 @@ func TestSessionChips(t *testing.T) {
 	var p Payload
 	p.SessionID = "sid"
 	p.TranscriptPath = "C:/h/.claude/projects/C--proj/sid.jsonl"
-	vars := map[string]string{"FORCE_HYPERLINK": "1", "TEMP": "C:/tmp", "TMP": "C:/wrong"}
+	vars := map[string]string{"FORCE_HYPERLINK": "1", "TEMP": "C:/tmp", "TMP": "C:/wrong", "TMPDIR": "C:/tmp"}
 	scratch := "C:/tmp/claude/C--proj/sid/scratchpad"
 	sess := "C:/h/.claude/projects/C--proj/sid"
 
@@ -248,14 +344,25 @@ func TestSessionChips(t *testing.T) {
 }
 
 func TestTempDirPrecedence(t *testing.T) {
-	e := env(map[string]string{"TEMP": "C:/temp", "TMP": "C:/tmp", "TMPDIR": "/tmpdir"}, "")
-	e.GOOS = "windows"
+	e := env(map[string]string{"TEMP": "C:/temp", "TMP": "C:/tmp", "TMPDIR": "/tmpdir", "SystemRoot": "C:/Windows"}, "")
+	e.GOOS = windows
 	if got := tempDir(e); got != "C:/temp" {
 		t.Fatalf("windows: TEMP must win over TMP (Node os.tmpdir order), got %q", got)
 	}
+	e = env(map[string]string{"SystemRoot": "C:/Windows"}, "")
+	e.GOOS = windows
+	if got := filepath.ToSlash(tempDir(e)); got != "C:/Windows/temp" {
+		t.Fatalf("windows fallback is %%SystemRoot%%\\temp, got %q", got)
+	}
+	e = env(map[string]string{"TMPDIR": "/tmpdir", "TMP": "/tmp2"}, "")
 	e.GOOS = "linux"
 	if got := tempDir(e); got != "/tmpdir" {
 		t.Fatalf("linux: TMPDIR first, got %q", got)
+	}
+	e = env(map[string]string{"TEMPDIR": "/tempdir"}, "")
+	e.GOOS = "linux"
+	if got := tempDir(e); got != "/tempdir" {
+		t.Fatalf("linux: TEMPDIR is libuv's last variable, got %q", got)
 	}
 	e = env(nil, "")
 	e.GOOS = "linux"

@@ -30,7 +30,7 @@ func main() {
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		return renderCmd(stdin, stdout)
+		return renderCmd(stdin, stdout, stderr)
 	}
 	switch args[0] {
 	case "install":
@@ -47,8 +47,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, `claude-statusline
-
+	fmt.Fprint(w, `usage:
   claude-statusline                render the status line from stdin JSON
   claude-statusline install        point settings.json statusLine at this binary
   claude-statusline uninstall      remove that entry
@@ -64,15 +63,21 @@ exit codes: 0 ok, 1 error, 2 refused to overwrite a foreign statusLine
 }
 
 // renderCmd never exits non-zero and never prints nothing: Claude Code blanks
-// the status line on either.
-func renderCmd(stdin io.Reader, stdout io.Writer) (code int) {
+// the status line on either. Diagnostics go to stderr, which `claude --debug`
+// logs.
+func renderCmd(stdin io.Reader, stdout, stderr io.Writer) (code int) {
 	defer func() {
 		if r := recover(); r != nil {
+			fmt.Fprintf(stderr, "claude-statusline: render panicked: %v\n", r)
 			fmt.Fprintln(stdout, "[ctx —]")
 			code = exitOK
 		}
 	}()
-	fmt.Fprint(stdout, render.Render(render.ParsePayload(stdin), render.OSEnv()))
+	p, ok := render.ParsePayload(stdin)
+	if !ok {
+		fmt.Fprintln(stderr, "claude-statusline: stdin was not a JSON payload; rendering the degraded line")
+	}
+	fmt.Fprint(stdout, render.Render(p, render.OSEnv()))
 	return exitOK
 }
 
@@ -82,8 +87,9 @@ type settingsFlags struct {
 	force bool
 }
 
-func parseSettingsFlags(name string, args []string, allowForce bool, stderr io.Writer) (settingsFlags, bool) {
-	var f settingsFlags
+// parseSettingsFlags returns ok=false with the exit code to use when parsing
+// fails or --help was requested.
+func parseSettingsFlags(name string, args []string, allowForce bool, stdout, stderr io.Writer) (f settingsFlags, ok bool, code int) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&f.path, "settings", "", "settings.json path")
@@ -92,7 +98,15 @@ func parseSettingsFlags(name string, args []string, allowForce bool, stderr io.W
 		fs.BoolVar(&f.force, "force", false, "replace a foreign statusLine")
 	}
 	if err := fs.Parse(args); err != nil {
-		return f, false
+		if errors.Is(err, flag.ErrHelp) {
+			usage(stdout)
+			return f, false, exitOK
+		}
+		return f, false, exitError
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "%s: unexpected argument %q\n", name, fs.Arg(0))
+		return f, false, exitError
 	}
 	if f.path == "" {
 		f.path = os.Getenv("CLAUDE_SETTINGS")
@@ -101,11 +115,11 @@ func parseSettingsFlags(name string, args []string, allowForce bool, stderr io.W
 		home, err := os.UserHomeDir()
 		if err != nil {
 			fmt.Fprintf(stderr, "cannot resolve home directory: %v\n", err)
-			return f, false
+			return f, false, exitError
 		}
 		f.path = filepath.Join(home, ".claude", "settings.json")
 	}
-	return f, true
+	return f, true, exitOK
 }
 
 func selfCommand(stderr io.Writer) (string, bool) {
@@ -113,6 +127,9 @@ func selfCommand(stderr io.Writer) (string, bool) {
 	if err != nil {
 		fmt.Fprintf(stderr, "cannot resolve own executable path: %v\n", err)
 		return "", false
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
 	}
 	return settings.Command(exe), true
 }
@@ -126,22 +143,44 @@ func readSettings(path string, stderr io.Writer) ([]byte, bool) {
 	return data, true
 }
 
+// writeSettings writes to a temp file beside the target and renames it into
+// place, so a crash mid-write cannot leave a truncated settings.json and a
+// concurrent save by Claude Code sees either the old file or the new one.
 func writeSettings(path string, data []byte, stderr io.Writer) bool {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		fmt.Fprintf(stderr, "cannot create %s: %v\n", filepath.Dir(path), err)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		fmt.Fprintf(stderr, "cannot create %s: %v\n", dir, err)
 		return false
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		fmt.Fprintf(stderr, "cannot write %s: %v\n", path, err)
+	tmp, err := os.CreateTemp(dir, ".settings.json.*.tmp")
+	if err != nil {
+		fmt.Fprintf(stderr, "cannot create temp file in %s: %v\n", dir, err)
+		return false
+	}
+	name := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(name)
+		fmt.Fprintf(stderr, "cannot write %s: %v\n", name, err)
+		return false
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(name)
+		fmt.Fprintf(stderr, "cannot close %s: %v\n", name, err)
+		return false
+	}
+	if err := os.Rename(name, path); err != nil {
+		_ = os.Remove(name)
+		fmt.Fprintf(stderr, "cannot replace %s: %v\n", path, err)
 		return false
 	}
 	return true
 }
 
 func installCmd(args []string, stdout, stderr io.Writer) int {
-	f, ok := parseSettingsFlags("install", args, true, stderr)
+	f, ok, code := parseSettingsFlags("install", args, true, stdout, stderr)
 	if !ok {
-		return exitError
+		return code
 	}
 	command, ok := selfCommand(stderr)
 	if !ok {
@@ -175,19 +214,19 @@ func installCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "  settings already up to date: %s\n", f.path)
 	}
 	if res.AddedHyperlink {
-		fmt.Fprintln(stdout, "  added    env.FORCE_HYPERLINK=1 (Windows Terminal needs it for clickable links)")
+		fmt.Fprintln(stdout, "  added    env.FORCE_HYPERLINK=1 (Claude Code's own links and this line, on terminals it does not auto-detect)")
 	}
 	if res.ReplacedLegacy != "" {
-		fmt.Fprintf(stdout, "  replaced %s (the script file itself is no longer used and can be deleted)\n", res.ReplacedLegacy)
+		fmt.Fprintf(stdout, "  replaced %s (that script is no longer used and can be deleted)\n", res.ReplacedLegacy)
 	}
 	fmt.Fprintln(stdout, "Claude Code reloads settings on save; restart it if the line does not appear.")
 	return exitOK
 }
 
 func uninstallCmd(args []string, stdout, stderr io.Writer) int {
-	f, ok := parseSettingsFlags("uninstall", args, false, stderr)
+	f, ok, code := parseSettingsFlags("uninstall", args, false, stdout, stderr)
 	if !ok {
-		return exitError
+		return code
 	}
 	command, ok := selfCommand(stderr)
 	if !ok {
@@ -202,12 +241,12 @@ func uninstallCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%s: %v\n", f.path, err)
 		return exitError
 	}
-	if f.print {
-		fmt.Fprintf(stdout, "settings: %s\n--- would write ---\n%s", f.path, res.Data)
-		return exitOK
-	}
 	if !res.Removed {
 		fmt.Fprintf(stdout, "nothing to uninstall: no claude-statusline entry in %s\n", f.path)
+		return exitOK
+	}
+	if f.print {
+		fmt.Fprintf(stdout, "settings: %s\n--- would write ---\n%s", f.path, res.Data)
 		return exitOK
 	}
 	if res.Changed && !writeSettings(f.path, res.Data, stderr) {

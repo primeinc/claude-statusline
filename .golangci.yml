@@ -1,27 +1,34 @@
-# golangci-lint v2. Linter set adapted from cli/cli (.golangci.yml @ ad2a338)
-# and oh-my-posh (src/.golangci.yml @ bc0845d); both run default: none with a
-# curated list. Reference for every key: golangci-lint .golangci.reference.yml.
+# golangci-lint v2. Every linter on; each disable below names its reason.
+# Reference for every key: golangci-lint .golangci.reference.yml @ 2b2fbaf.
 version: "2"
 
 linters:
-  default: none
-  enable:
-    - copyloopvar
-    - errcheck
-    - gocritic
-    - goconst
-    - govet
-    - ineffassign
-    - misspell
-    - nolintlint
-    - revive
-    - staticcheck
-    - unconvert
-    - unparam
-    - unused
+  default: all
+  disable:
+    - depguard # no import allow-list is needed for four direct dependencies
+    - exhaustruct # zero-valued struct fields are the point of Payload/Env
+    - gochecknoglobals # settings.readFile/homeDir are injected for tests on purpose
+    - godox # no TODO policy
+    - gomodguard # deprecated in 2.12; gomodguard_v2 stays on
+    - gosmopolitan # one test asserts that non-ASCII survives cleanText; that is the point
+    - ireturn # no interface-returning API here
+    - mnd # 0o644, 0x20, 1000 are the numbers they are
+    - nlreturn # blank-line-before-return style only
+    - noinlineerr # `if x, err := f(); err != nil` is the Go idiom this repo uses
+    - nonamedreturns # (value, ok) results are named for the doc; renderCmd needs one for recover
+    - paralleltest # tests mutate package-level test hooks and env; sequential by design
+    - tagliatelle # JSON tags are Claude Code's snake_case payload contract, not ours to rename
+    - testpackage # internal test packages exercise unexported helpers on purpose
+    - varnamelen # short names in two-line helpers are fine
+    - wsl # whitespace-style only
+    - wsl_v5 # whitespace-style only
   settings:
-    goconst:
-      ignore-tests: true
+    cyclop:
+      max-complexity: 15
+      skip-tests: true # table tests are long by construction
+    errcheck:
+      check-blank: true # `_ = f()` is a discarded error, not an accepted one
+      check-type-assertions: true
     gocritic:
       enabled-tags:
         - diagnostic
@@ -31,6 +38,16 @@ linters:
         - experimental
       disabled-checks:
         - hugeParam # one render per process; copying a 112-byte payload is not a cost
+    goconst:
+      ignore-tests: true
+    gosec:
+      excludes:
+        - G204 # tests spawn git with fixed argv
+        - G301 # 0755 directories: ~/.claude and test fixtures are user-owned
+        - G304 # reading files by computed path is what this program does
+        - G306 # 0644 settings.json matches what Claude Code writes
+    lll:
+      line-length: 180
     revive:
       rules:
         - name: var-naming
