@@ -23,8 +23,14 @@ func TestRenderNeverFails(t *testing.T) {
 	if out.String() != "[ctx —]\n" {
 		t.Fatalf("malformed input must degrade visibly, got %q", out.String())
 	}
-	if !strings.Contains(errOut.String(), "did not fully decode") {
+	if !strings.Contains(errOut.String(), "rendering what parsed") {
 		t.Fatalf("malformed input must be reported on stderr, got %q", errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	run(nil, strings.NewReader(`{"cwd":"D:/x","model":{"id":5}}`), &out, &errOut)
+	if !strings.Contains(errOut.String(), `field "model.id"`) || !strings.Contains(out.String(), "D:/x/") {
+		t.Fatalf("a mistyped field must be named on stderr and the rest rendered: out=%q err=%q", out.String(), errOut.String())
 	}
 }
 
@@ -111,6 +117,28 @@ func TestWriteFollowsSymlink(t *testing.T) {
 	data, err := os.ReadFile(target)
 	if err != nil || !strings.Contains(string(data), `"statusLine"`) {
 		t.Fatalf("the link target must receive the content: %q %v", data, err)
+	}
+}
+
+func TestWriteKeepsFileMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if code := run([]string{"install", "--settings", path}, nil, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Mode().Perm() != before.Mode().Perm() {
+		t.Fatalf("mode changed by the temp+rename write: %v -> %v", before.Mode().Perm(), after.Mode().Perm())
 	}
 }
 

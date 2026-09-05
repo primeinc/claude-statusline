@@ -13,6 +13,7 @@ package render
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/url"
@@ -59,24 +60,26 @@ type Repo struct {
 	Name  string `json:"name"`
 }
 
-// ParsePayload returns ok=false for input that is not a JSON payload; the
-// caller renders whatever was decoded and may report why. A syntax error
-// yields the zero Payload. A type error on one field (encoding/json keeps
-// decoding and reports the earliest such error) keeps every other field.
-func ParsePayload(r io.Reader) (p Payload, ok bool) {
+// ParsePayload returns a non-nil error for input that is not a complete JSON
+// payload; the caller renders whatever was decoded and may report the error.
+// A syntax error yields the zero Payload. A type error on one field
+// (encoding/json keeps decoding and reports the earliest such error) keeps
+// every other field and names the field in the error.
+func ParsePayload(r io.Reader) (Payload, error) {
+	var p Payload
 	raw, err := io.ReadAll(r)
 	if err != nil {
-		return Payload{}, false
+		return Payload{}, fmt.Errorf("reading stdin: %w", err)
 	}
 	err = json.Unmarshal(raw, &p)
 	var typeErr *json.UnmarshalTypeError
 	switch {
 	case err == nil:
-		return p, true
+		return p, nil
 	case errors.As(err, &typeErr):
-		return p, false
+		return p, fmt.Errorf("field %q: %w", typeErr.Field, err)
 	default:
-		return Payload{}, false
+		return Payload{}, fmt.Errorf("payload: %w", err)
 	}
 }
 

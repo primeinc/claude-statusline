@@ -27,6 +27,8 @@ func TestParseRemote(t *testing.T) {
 		{"/example.com/owner/repo.git", Remote{}, false},
 		{"C:\\example.com\\owner\\repo.git", Remote{}, false},
 		{"ssh://git@[/tmp/git-repo", Remote{}, false},
+		{"https://github.com/owner/re\x1b]8;;evilpo.git", Remote{}, false}, // net/url rejects control bytes
+		{"git@github.com:owner/re\apo.git", Remote{}, false},
 		{"", Remote{}, false},
 	}
 	for _, c := range cases {
