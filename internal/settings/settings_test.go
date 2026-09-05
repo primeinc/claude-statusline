@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -37,8 +38,11 @@ const fixture = `{
 }
 `
 
+// header is how the previous installer's script begins.
+const header = "#!/usr/bin/env node\n// claude-statusline — a single-file, non-blocking statusline for Claude Code.\n// Output: ...\n"
+
 // legacyFS makes "node C:/Users/will/.claude/statusline.js" resolve to a file
-// with the previous installer's header, and everything else to ENOENT.
+// with the given content, and everything else to ENOENT.
 func legacyFS(t *testing.T, content string) {
 	t.Helper()
 	prevRead, prevHome := readFile, homeDir
@@ -77,7 +81,7 @@ func TestInstallIntoEmpty(t *testing.T) {
 }
 
 func TestInstallRefusesForeign(t *testing.T) {
-	legacyFS(t, "// claude-statusline — a single-file statusline\n")
+	legacyFS(t, header)
 	foreign := []string{
 		"bash ~/my-cool-statusline.sh",
 		"python /opt/someoneelse/statusline.exe --their-flag",
@@ -109,7 +113,11 @@ func withCommand(t *testing.T, cmd string) []byte {
 }
 
 func TestInstallRecognisesOurs(t *testing.T) {
-	for _, cmd := range []string{ours, `"` + ours + `"`, strings.ReplaceAll(ours, "/", `\`), " " + ours + " "} {
+	variants := []string{ours, `"` + ours + `"`, strings.ReplaceAll(ours, "/", `\`), " " + ours + " "}
+	if runtime.GOOS == "windows" {
+		variants = append(variants, strings.ToUpper(ours)) // NTFS paths are case-insensitive
+	}
+	for _, cmd := range variants {
 		in, err := json.Marshal(map[string]any{"statusLine": map[string]any{"type": "command", "command": cmd, "padding": 2}})
 		if err != nil {
 			t.Fatal(err)
@@ -129,21 +137,30 @@ func TestInstallRecognisesOurs(t *testing.T) {
 
 func TestInstallLegacyNeedsFileContent(t *testing.T) {
 	in := []byte(fixture)
-	legacyFS(t, "// claude-statusline — a single-file, non-blocking statusline for Claude Code.\n")
-	res, err := Install(in, ours, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.ReplacedLegacy != "node C:/Users/will/.claude/statusline.js" {
-		t.Fatalf("previous installer's entry must be replaced and reported: %+v", res)
-	}
-	if gjson.GetBytes(res.Data, "statusLine.command").String() != ours {
-		t.Fatalf("command not replaced:\n%s", res.Data)
+	for _, content := range []string{header, strings.ReplaceAll(header, "\n", "\r\n")} {
+		legacyFS(t, content)
+		res, err := Install(in, ours, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.ReplacedLegacy != "node C:/Users/will/.claude/statusline.js" {
+			t.Fatalf("previous installer's entry must be replaced and reported: %+v", res)
+		}
+		if gjson.GetBytes(res.Data, "statusLine.command").String() != ours {
+			t.Fatalf("command not replaced:\n%s", res.Data)
+		}
 	}
 
-	legacyFS(t, "// someone else's node statusline at the same path\n")
-	if _, err := Install(in, ours, false); !errors.Is(err, ErrForeign) {
-		t.Fatalf("same path, different script: must be refused, got %v", err)
+	foreignScripts := []string{
+		"// someone else's node statusline at the same path\n",
+		"#!/usr/bin/env node\n// mine\n// see the claude-statusline package notes for FORCE_HYPERLINK\n", // mentions us later
+		"// claude-statusline — copied header without the shebang\n",
+	}
+	for _, content := range foreignScripts {
+		legacyFS(t, content)
+		if _, err := Install(in, ours, false); !errors.Is(err, ErrForeign) {
+			t.Fatalf("%q: same path, different script: must be refused, got %v", content, err)
+		}
 	}
 	legacyFS(t, "")
 	readFile = func(string) ([]byte, error) { return nil, os.ErrNotExist }
@@ -168,7 +185,7 @@ func TestInstallForceReplacesForeign(t *testing.T) {
 }
 
 func TestInstallPreservesEverythingElse(t *testing.T) {
-	legacyFS(t, "// claude-statusline\n")
+	legacyFS(t, header)
 	res, err := Install([]byte(fixture), ours, false)
 	if err != nil {
 		t.Fatal(err)
@@ -201,7 +218,7 @@ func TestInstallPreservesEverythingElse(t *testing.T) {
 }
 
 func TestInstallIdempotent(t *testing.T) {
-	legacyFS(t, "// claude-statusline\n")
+	legacyFS(t, header)
 	first, err := Install([]byte(fixture), ours, false)
 	if err != nil {
 		t.Fatal(err)
@@ -227,7 +244,7 @@ func TestInstallRejectsNonObject(t *testing.T) {
 }
 
 func TestUninstall(t *testing.T) {
-	legacyFS(t, "// claude-statusline\n")
+	legacyFS(t, header)
 	installed, err := Install([]byte(fixture), ours, false)
 	if err != nil {
 		t.Fatal(err)
@@ -256,6 +273,23 @@ func TestUninstall(t *testing.T) {
 	res, err = Uninstall(nil, ours)
 	if err != nil || res.Removed {
 		t.Fatalf("empty file: %+v err=%v", res, err)
+	}
+}
+
+func TestUninstallRestoresNodeInstallerBackup(t *testing.T) {
+	in := []byte(`{"a":1,"statusLine":{"type":"command","command":"` + ours + `"},"statusLineBackup":{"type":"command","command":"bash ~/original.sh","padding":3},"z":2}`)
+	res, err := Uninstall(in, ours)
+	if err != nil || !res.Removed {
+		t.Fatalf("%+v err=%v", res, err)
+	}
+	if got := gjson.GetBytes(res.Data, "statusLine.command").String(); got != "bash ~/original.sh" {
+		t.Fatalf("backup must be restored into statusLine, got %q\n%s", got, res.Data)
+	}
+	if gjson.GetBytes(res.Data, "statusLine.padding").Int() != 3 || gjson.GetBytes(res.Data, "statusLineBackup").Exists() {
+		t.Fatalf("backup restored whole and consumed:\n%s", res.Data)
+	}
+	if k := keys(t, res.Data); strings.Join(k, ",") != "a,statusLine,z" {
+		t.Fatalf("key order: %v", k)
 	}
 }
 

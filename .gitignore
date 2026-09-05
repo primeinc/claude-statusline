@@ -1,5 +1,6 @@
 /claude-statusline
 /claude-statusline.exe
+/.bench-payload.json
 *.log
 .DS_Store
 Thumbs.db
