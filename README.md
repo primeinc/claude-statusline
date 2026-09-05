@@ -1,141 +1,90 @@
 # claude-statusline
 
-A single-file, zero-dependency [Claude Code](https://code.claude.com/) statusline.
-
-Renders one tight line:
+One-line [Claude Code](https://code.claude.com/docs/en/statusline) status line, one Go binary, no `git` subprocess.
 
 ```
-~/dev/claude-statusline/ opus-4.7 [63k/200k] primeinc/claude-statusline ⎇ feature/foo
+~/dev/claude-statusline/ fable-5.1 [43%] primeinc/claude-statusline ⎇ go-rewrite scratch sess
 ```
 
-Everything is OSC 8 clickable in terminals that honour hyperlinks (Windows Terminal, iTerm2, WezTerm, Kitty, vscode, Ghostty). The `~/path` opens the folder; `primeinc/claude-statusline` opens the repo; `⎇ feature/foo` opens the branch view.
+Every chip is an OSC 8 hyperlink when `FORCE_HYPERLINK` or `WT_SESSION` is set:
 
-## Why a custom statusline
+| chip | opens |
+|---|---|
+| `~/path/` | the working directory |
+| `owner/repo` | the repository on its forge |
+| `⎇ branch` | the branch view, or the commit when HEAD is detached |
+| `scratch` | this session's scratchpad: `<tmp>/claude/<project>/<session_id>/scratchpad` |
+| `sess` | this session's folder under `~/.claude/projects/` (subagents, tool results); the project folder until it exists |
 
-The bundled examples in [Claude Code's statusline docs](https://code.claude.com/docs/en/statusline) shell out to `git`, `gh`, and `jq` on every render. That's ~6 subprocess spawns per refresh. This one:
-
-- Reads `.git/config`, `.git/HEAD`, and `commondir` directly — no `git` subprocess
-- Reads context usage from Claude Code's `context_window` stdin payload — no transcript file walk. When the payload omits those fields it shows a visible `[ctx —]` rather than a fabricated default
-- Resolves git worktrees via `commondir` so `config` is read from the common dir, not the per-worktree gitdir
-- Normalises GitHub SSH remotes (`git@github.com:owner/repo.git`) to `https://github.com/owner/repo`
-- Sanitizes every repo-controlled value (paths, branch names, remotes) before terminal emission and percent-encodes all URLs, so a hostile repo can't inject escape sequences
-- Detects hyperlink-capable terminals and emits OSC 8; otherwise falls back to raw URLs
-
-Each behavior above is covered by a fixture in `test/run.js`. Render cost is dominated by Node startup; Claude Code debounces statusline updates at 300 ms.
+Without hyperlinks the line shows the repo URL and branch name as plain text and omits `scratch` and `sess`.
 
 ## Install
 
-**One-liner (recommended):**
-
 ```bash
-npx @primeinc/claude-statusline install
+go install github.com/primeinc/claude-statusline@latest
+claude-statusline install
 ```
 
-The installer wires the command into `~/.claude/settings.json` and adds `FORCE_HYPERLINK=1` to the `env` block (required for Windows Terminal). It's idempotent and preserves all other settings.
+`install` writes `statusLine.command` (this binary's path) and `env.FORCE_HYPERLINK=1` into `~/.claude/settings.json`, preserving every other key and the file's order. It replaces an entry written by the previous Node installer (`node …/.claude/statusline.js`) and refuses any other existing `statusLine` unless `--force`.
 
-Then restart Claude Code.
-
-After a global install (`npm i -g @primeinc/claude-statusline`), the short `ccsl` command is also available:
-
-```bash
-ccsl install       # same as: npx @primeinc/claude-statusline install
-ccsl uninstall
-ccsl --help
+```
+claude-statusline install [--force] [--print] [--settings PATH]
+claude-statusline uninstall [--print] [--settings PATH]
 ```
 
-**Installer flags:**
+Exit codes: 0 ok, 1 error, 2 refused to overwrite a foreign `statusLine`. `CLAUDE_SETTINGS` overrides the settings path.
 
-```bash
-ccsl install --print           # dry run
-ccsl install --force           # overwrite a foreign existing statusLine
-                               # (backs it up to settings.statusLineBackup)
-ccsl install --dest PATH       # non-default script destination
-ccsl install --settings PATH   # non-default settings.json location
-ccsl install --no-copy         # use the installed package's file in place
-                               # (updates flow via `npm update -g`)
-ccsl uninstall                 # restores statusLineBackup if present
-ccsl --help
-```
+## Input
 
-**Manual install (no npm):**
+Fields read from the stdin payload: `workspace.current_dir` (or `cwd`), `model.id`, `context_window.*`, `session_id`, `transcript_path`.
 
-1. Drop `statusline.js` somewhere on disk (e.g. `~/.claude/statusline.js`).
-2. Merge `examples/settings.fragment.json` into `~/.claude/settings.json`.
+Context field precedence: `[used/total]` when both token counts are present, else `[N%]` from `used_percentage` or `remaining_percentage`, else `[ctx —]`. Nothing is fabricated.
 
-The fragment is plain JSON, deep-mergeable by anything (`jq`, ansible, manual edit):
+Model slug: `claude-sonnet-4-6-20251001` → `sonnet-4.6`, `claude-opus-4-7[1m]` → `opus-4.7`, `claude-opus-5` → `opus-5`.
 
-```bash
-jq -s '.[0] * .[1]' ~/.claude/settings.json examples/settings.fragment.json \
-  | tee ~/.claude/settings.json.new && mv ~/.claude/settings.json.new ~/.claude/settings.json
-```
+## Git
 
-Or just copy the fields by hand:
+Read directly from `.git`: `HEAD` from the per-worktree directory, `config` from the common directory (`commondir`), so linked worktrees resolve. Detached HEAD renders `HEAD @<sha7>`.
 
-```json
-{
-  "env": {
-    "FORCE_HYPERLINK": "1"
-  },
-  "statusLine": {
-    "type": "command",
-    "command": "node ~/.claude/statusline.js"
-  }
-}
-```
+Forges: `github.com` (`/tree/<branch>`, `/commit/<sha>`) and `git.title.dev` (Forgejo: `/src/branch/<branch>`, `/commit/<sha>`). Remote forms: `https://`, `ssh://`, `git://`, `git+ssh://`, `git+https://`, and `git@host:owner/repo.git`. Any other host, a missing origin, or a config git itself would reject renders no repo chip.
 
-Restart Claude Code.
+Every repo-controlled string is stripped of C0/C1 control bytes and every URL is built from percent-encoded segments before it reaches the terminal.
 
-## Environment variables
+## Cost
 
-| Var | Effect |
+Claude Code on Windows runs the command through Git Bash. Measured with hyperfine (30 runs, warmup 5, this machine):
+
+| command under `bash -c` | mean |
 |---|---|
-| `FORCE_HYPERLINK=1` | Forces Claude Code (and this script) to emit OSC 8 hyperlinks even when the terminal isn't in the auto-detect list. Required for Windows Terminal. |
-| `STATUSLINE_DEBUG=1` | Appends a JSON line per render to `~/.claude/statusline-debug.log` with the stdin payload summary, every hyperlink-related env var, and the exact bytes emitted. Off by default. |
+| `true` | 28.5 ms |
+| minimal Go process printing one line | 39.6 ms |
+| `claude-statusline` (full render) | 40.7 ms |
+| `node statusline.js` (previous implementation) | 84.3 ms |
 
-## What it shows
+A persistent daemon still needs a spawned client, whose floor is the second row. Its ceiling is therefore about 1 ms per render. Not built.
 
-Per render, Claude Code pipes a JSON payload over stdin. This script uses:
+## Development
 
-| Field | Used for |
-|---|---|
-| `workspace.current_dir` / `cwd` | The `~/path/` segment and the `file://` link target |
-| `model.id` | The short model slug (`opus-4.7`) |
-| `context_window.used_percentage` / `remaining_percentage` | Context field as `[N%]` — the [documented](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md) contract |
-| `context_window.total_input_tokens` / `context_window_size` | If a build also supplies raw counts, the exact `[used/total]` form is preferred over the percentage |
+```
+just test    # go test ./...
+just lint    # go vet + golangci-lint (.golangci.yml)
+just fmt     # gofmt + goimports
+just check   # test + lint + formatting diff
+just bench   # hyperfine under bash -c
+```
 
-If none of those fields are present, the context field renders `[ctx —]` — it never fabricates `[0/200k]`.
+## Provenance
 
-Then it reads from `.git/`:
-
-| File | Used for |
-|---|---|
-| `HEAD` (or `<worktree>/.git/HEAD` after resolving via `commondir`) | Current branch name, or detached-HEAD sha |
-| `config` (in common dir) | Origin remote URL → `owner/repo` |
-
-### Git support boundary
-
-Backed by fixtures in `test/run.js`: normal repos, linked worktrees, detached HEAD, GitHub HTTPS and SSH remotes.
-
-Intentionally unsupported (no repo chip is shown): non-GitHub hosts, GitHub Enterprise, `ssh://` URLs, non-`origin` remotes, and refs that live only in `packed-refs` (the `HEAD` symref itself is still read correctly).
-
-## Triggers and cadence
-
-[Per the docs](https://code.claude.com/docs/en/statusline#how-status-lines-work), Claude Code reruns the statusline:
-
-- after each new assistant message
-- after `/compact`
-- on permission-mode change
-- on vim-mode toggle
-
-Triggers are debounced at 300 ms; in-flight scripts are cancelled if a new trigger fires. No `refreshInterval` is needed for this script — all data is push-driven.
-
-## Hardening
-
-- Pure synchronous I/O — no timers, no promises, no long-lived async work. The only event listener is a fire-once `stdout` 'error' guard. Process exits the tick after stdout flush.
-- Every `fs.readFileSync` for git files is wrapped in `try/catch` — missing files, permission errors, dir-shaped placeholders, and symlink loops all degrade gracefully.
-- `process.stdout.on('error')` guards against EPIPE if Claude Code cancels mid-render.
-- Empty/malformed stdin renders a minimal line, no crash.
-- The debug-log append is also wrapped — disk-full or unwritable HOME won't break the render.
+| concern | source | revision | relation |
+|---|---|---|---|
+| payload contract | code.claude.com/docs/en/statusline | fetched 2026-09-04 | contract |
+| scratchpad and session dirs | observed on this machine, 61 projects | 2026-09-04 | observed, not documented upstream |
+| remote URL normalisation | cli/cli `git/url.go` | ad2a338 | adapted |
+| git-config parsing | go-git/gcfg | 8c5976d | dependency |
+| settings.json editing | tidwall/sjson, gjson, pretty | 3a21ce7, 8d89927, 9090695 | dependency |
+| Forgejo URL scheme | forgejo/forgejo `modules/git/ref.go`, `routers/web/web.go` | d7471ea | cited |
+| lint baseline | cli/cli, oh-my-posh `.golangci.yml` | ad2a338, bc0845d | adapted |
+| daemon architecture | oh-my-posh `src/cli/serve.go` | bc0845d | observed, rejected: its shell owns the daemon's stdin; Claude Code spawns a fresh shell per render |
 
 ## License
 
