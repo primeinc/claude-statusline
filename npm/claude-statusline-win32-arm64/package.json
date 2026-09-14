@@ -1,6 +1,6 @@
 {
   "name": "@primeinc/claude-statusline-win32-arm64",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "claude-statusline binary for Windows arm64. Install @primeinc/claude-statusline instead.",
   "files": [
     "claude-statusline.exe"
