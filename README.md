@@ -80,8 +80,6 @@ just bench          # hyperfine through the Git Bash launcher
 just real-configs 'C:/Users/you/dev/*/.git/config'   # parse every real .git/config with the shipped reader
 ```
 
-CI (`.github/workflows/ci.yml`) declares vet and tests on Windows and Ubuntu, and golangci-lint pinned to the local version, on pull requests and pushes to `main`.
-
 ## Provenance
 
 | concern | source | revision | relation |
@@ -95,7 +93,6 @@ CI (`.github/workflows/ci.yml`) declares vet and tests on Windows and Ubuntu, an
 | settings.json editing | tidwall/sjson, gjson, pretty | v1.2.5, v1.19.0, v1.2.1 | dependency |
 | Forgejo URL scheme | forgejo/forgejo `modules/git/ref.go:205`, `routers/web/web.go:1781` | d7471ea | cited |
 | lint baseline | golangci-lint `.golangci.reference.yml`; cli/cli, oh-my-posh configs | 2b2fbaf; ad2a338, bc0845d | adapted |
-| CI | golangci-lint docs `welcome/install/ci.md`; golangci-lint-action `action.yml` | 2b2fbaf; 2ed87ef | adapted |
 | daemon architecture | oh-my-posh `src/cli/serve.go` | bc0845d | observed, rejected: its shell owns the daemon's stdin; Claude Code spawns a fresh shell per render |
 
 ## License
