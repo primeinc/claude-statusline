@@ -1,6 +1,11 @@
 /claude-statusline
 /claude-statusline.exe
 /.bench-payload.json
+/dist/
+/npm/claude-statusline-*/claude-statusline
+/npm/claude-statusline-*/claude-statusline.exe
+/npm/claude-statusline/README.md
+/npm/claude-statusline/LICENSE
 *.log
 .DS_Store
 Thumbs.db

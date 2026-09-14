@@ -20,12 +20,16 @@ Hyperlinks: `FORCE_HYPERLINK` is Claude Code's own override and wins when set (`
 
 ## Install
 
-Until a tagged release exists on `main`, install from a checkout:
+```bash
+npx @primeinc/claude-statusline install
+```
+
+The npm package is a Node launcher plus one prebuilt binary package per platform: `win32`, `darwin` and `linux`, each `x64` and `arm64`. The Linux binaries are static, so glibc and musl both work. `install` copies this platform's binary to `~/.claude/claude-statusline` (`.exe` on Windows) and runs the copy's `install`, so the settings entry never points into the npx cache. The status line runs that copy directly; Node runs only for `install` and `uninstall`.
+
+With Go:
 
 ```bash
-git clone https://github.com/primeinc/claude-statusline
-cd claude-statusline
-go install .
+go install github.com/primeinc/claude-statusline@main
 claude-statusline install
 ```
 
@@ -78,6 +82,10 @@ just fmt            # gofmt + goimports
 just check          # test + lint + formatting diff
 just bench          # hyperfine through the Git Bash launcher
 just real-configs 'C:/Users/you/dev/*/.git/config'   # parse every real .git/config with the shipped reader
+just npm::version 0.2.1   # set the version on every npm package
+just npm::smoke           # cross-compile, pack, install the tarballs into dist/smoke, install + render + uninstall
+just npm::publish         # smoke, then publish platform packages and the launcher
+just npm::verify          # every package at that version is on the registry
 ```
 
 ## Provenance
@@ -91,6 +99,7 @@ just real-configs 'C:/Users/you/dev/*/.git/config'   # parse every real .git/con
 | remote URL normalisation | cli/cli `git/url.go` | ad2a338 | adapted |
 | git-config parsing | go-git/gcfg | v1.5.1-0.20230307220236-3a3c6141e376 | dependency |
 | settings.json editing | tidwall/sjson, gjson, pretty | v1.2.5, v1.19.0, v1.2.1 | dependency |
+| npm launcher and per-platform packages | biomejs/biome `packages/@biomejs/biome/bin/biome`, `scripts/generate-packages.mjs`, `.github/workflows/release.yml` | 2081460 | adapted |
 | Forgejo URL scheme | forgejo/forgejo `modules/git/ref.go:205`, `routers/web/web.go:1781` | d7471ea | cited |
 | lint baseline | golangci-lint `.golangci.reference.yml`; cli/cli, oh-my-posh configs | 2b2fbaf; ad2a338, bc0845d | adapted |
 | daemon architecture | oh-my-posh `src/cli/serve.go` | bc0845d | observed, rejected: its shell owns the daemon's stdin; Claude Code spawns a fresh shell per render |
