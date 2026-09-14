@@ -1,0 +1,79 @@
+#!/usr/bin/env node
+// Launcher for the claude-statusline Go binary, shipped in one optional
+// dependency per platform (layout adapted from @biomejs/biome bin/biome).
+//
+// install and uninstall run a copy at ~/.claude/claude-statusline[.exe]:
+// install records its own executable path in settings.json, and a path inside
+// node_modules or the npx cache breaks when that cache is cleaned. The status
+// line itself runs the copy directly, without Node.
+"use strict";
+
+const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+const PLATFORMS = {
+  win32: { x64: "win32-x64", arm64: "win32-arm64" },
+  darwin: { x64: "darwin-x64", arm64: "darwin-arm64" },
+  linux: { x64: "linux-x64", arm64: "linux-arm64" },
+};
+
+const ext = process.platform === "win32" ? ".exe" : "";
+const stable = path.join(os.homedir(), ".claude", `claude-statusline${ext}`);
+
+function fail(message) {
+  console.error(`claude-statusline: ${message}`);
+  process.exit(1);
+}
+
+function packagedBinary() {
+  if (process.env.CLAUDE_STATUSLINE_BINARY) {
+    return process.env.CLAUDE_STATUSLINE_BINARY;
+  }
+  const target = PLATFORMS[process.platform]?.[process.arch];
+  if (!target) {
+    fail(
+      `no prebuilt binary for ${process.platform}-${process.arch}; ` +
+        "build one with: go install github.com/primeinc/claude-statusline@latest",
+    );
+  }
+  const pkg = `@primeinc/claude-statusline-${target}`;
+  try {
+    return require.resolve(`${pkg}/claude-statusline${ext}`);
+  } catch {
+    fail(`${pkg} is not installed; reinstall without --omit=optional`);
+  }
+}
+
+function run(binary, args) {
+  const result = spawnSync(binary, args, { stdio: "inherit", shell: false });
+  if (result.error) {
+    fail(`cannot run ${binary}: ${result.error.message}`);
+  }
+  process.exit(result.status ?? 1);
+}
+
+const args = process.argv.slice(2);
+
+switch (args[0]) {
+  case "install": {
+    const source = packagedBinary();
+    if (path.resolve(source) !== path.resolve(stable)) {
+      try {
+        fs.mkdirSync(path.dirname(stable), { recursive: true });
+        fs.copyFileSync(source, stable);
+        fs.chmodSync(stable, 0o755);
+      } catch (err) {
+        fail(`cannot copy ${source} to ${stable}: ${err.message}`);
+      }
+    }
+    run(stable, args);
+    break;
+  }
+  case "uninstall":
+    run(fs.existsSync(stable) ? stable : packagedBinary(), args);
+    break;
+  default:
+    run(packagedBinary(), args);
+}

@@ -4,6 +4,9 @@ set minimum-version := '1.55.0'
 set export
 set script-interpreter := ['bash', '-euo', 'pipefail']
 
+# npm distribution recipes (npm.just)
+mod npm
+
 binary := if os_family() == 'windows' { 'claude-statusline.exe' } else { 'claude-statusline' }
 
 # repo root as a native path (C:/... on Windows), for the binary and hyperfine

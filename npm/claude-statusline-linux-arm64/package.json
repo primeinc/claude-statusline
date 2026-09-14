@@ -1,0 +1,24 @@
+{
+  "name": "@primeinc/claude-statusline-linux-arm64",
+  "version": "0.2.0",
+  "description": "claude-statusline binary for Linux arm64 (static; glibc and musl). Install @primeinc/claude-statusline instead.",
+  "files": [
+    "claude-statusline"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/primeinc/claude-statusline.git",
+    "directory": "npm/claude-statusline-linux-arm64"
+  },
+  "homepage": "https://github.com/primeinc/claude-statusline#readme",
+  "license": "MIT",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

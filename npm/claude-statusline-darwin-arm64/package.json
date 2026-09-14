@@ -1,0 +1,24 @@
+{
+  "name": "@primeinc/claude-statusline-darwin-arm64",
+  "version": "0.2.0",
+  "description": "claude-statusline binary for macOS arm64. Install @primeinc/claude-statusline instead.",
+  "files": [
+    "claude-statusline"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/primeinc/claude-statusline.git",
+    "directory": "npm/claude-statusline-darwin-arm64"
+  },
+  "homepage": "https://github.com/primeinc/claude-statusline#readme",
+  "license": "MIT",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

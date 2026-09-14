@@ -1,0 +1,46 @@
+{
+  "name": "@primeinc/claude-statusline",
+  "version": "0.2.0",
+  "description": "One-line Claude Code status line with OSC 8 hyperlinks: a native binary, no git subprocess.",
+  "bin": {
+    "claude-statusline": "bin/claude-statusline",
+    "ccsl": "bin/claude-statusline"
+  },
+  "files": [
+    "bin/claude-statusline"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/primeinc/claude-statusline.git",
+    "directory": "npm/claude-statusline"
+  },
+  "bugs": {
+    "url": "https://github.com/primeinc/claude-statusline/issues"
+  },
+  "homepage": "https://github.com/primeinc/claude-statusline#readme",
+  "keywords": [
+    "claude-code",
+    "statusline",
+    "osc8",
+    "hyperlinks",
+    "terminal",
+    "git",
+    "windows-terminal"
+  ],
+  "author": "primeinc <will@4pp.dev>",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@primeinc/claude-statusline-darwin-arm64": "0.2.0",
+    "@primeinc/claude-statusline-darwin-x64": "0.2.0",
+    "@primeinc/claude-statusline-linux-arm64": "0.2.0",
+    "@primeinc/claude-statusline-linux-x64": "0.2.0",
+    "@primeinc/claude-statusline-win32-arm64": "0.2.0",
+    "@primeinc/claude-statusline-win32-x64": "0.2.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
