@@ -39,6 +39,10 @@ pack: build
     for d in npm/*/; do
       npm pack "./$d" --pack-destination dist/npm
     done
+    # modes as published: darwin and linux binaries must be executable (npm sets +x on bin entries at pack time)
+    for t in dist/npm/*.tgz; do
+      tar -tvzf "$t"
+    done
 
 # install the packed launcher and this host's binary package into dist/smoke, then install and render through them
 [script]

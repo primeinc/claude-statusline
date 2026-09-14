@@ -1,7 +1,10 @@
 {
   "name": "@primeinc/claude-statusline-linux-x64",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "claude-statusline binary for Linux x64 (static; glibc and musl). Install @primeinc/claude-statusline instead.",
+  "bin": {
+    "claude-statusline-linux-x64": "claude-statusline"
+  },
   "files": [
     "claude-statusline"
   ],
