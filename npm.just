@@ -82,5 +82,8 @@ verify:
     v=$(node -p "require('./npm/claude-statusline/package.json').version")
     for d in npm/*/; do
       name="@primeinc/$(basename "$d")"
-      echo "$name@$v: $(npm view "$name@$v" version --prefer-online)"
+      # a bare assignment, so a failing npm view trips set -e
+      got=$(npm view "$name@$v" version --prefer-online)
+      [ "$got" = "$v" ] || { echo "$name@$v: registry returned '$got'" >&2; exit 1; }
+      echo "$name@$v: live"
     done
