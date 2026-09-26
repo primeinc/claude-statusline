@@ -1,5 +1,6 @@
 # npm distribution: @primeinc/claude-statusline launcher plus one binary package per platform
 
+set minimum-version := '1.56.0'
 set export
 
 # Windows names `sh`, never `bash`: see justfile.
