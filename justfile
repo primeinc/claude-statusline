@@ -1,7 +1,14 @@
 # claude-statusline dev commands
 
-set minimum-version := '1.55.0'
+set minimum-version := '1.56.0'
 set export
+
+# Windows names `sh`, never `bash`: just walks PATH in order, and a bare `bash`
+# hits System32\bash.exe, the WSL launcher, whenever System32 precedes Git.
+# Git's sh.exe runs its bash.
+[windows]
+set script-interpreter := ['sh', '-euo', 'pipefail']
+[unix]
 set script-interpreter := ['bash', '-euo', 'pipefail']
 
 # npm distribution recipes (npm.just)
