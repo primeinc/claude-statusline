@@ -1,6 +1,11 @@
 # npm distribution: @primeinc/claude-statusline launcher plus one binary package per platform
 
 set export
+
+# Windows names `sh`, never `bash`: see justfile.
+[windows]
+set script-interpreter := ['sh', '-euo', 'pipefail']
+[unix]
 set script-interpreter := ['bash', '-euo', 'pipefail']
 
 # repo root as a native path (C:/... on Windows), for npm and node
