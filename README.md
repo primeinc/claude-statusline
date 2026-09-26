@@ -75,6 +75,8 @@ The `true` row is the floor any command pays under that launcher, a persistent d
 
 ## Development
 
+Requires just 1.56.0 or later. On Windows every recipe runs through `sh`, which must be on the `PATH` of the shell that runs `just`: add Git for Windows' `bin` directory (`C:\Program Files\Git\bin` on a default install). The installer's default PATH option adds only `cmd`, and then `just` stops with ``could not find the shell `sh` ``. The recipes never name `bash`: outside Git Bash it resolves to `System32\bash.exe`, the WSL launcher.
+
 ```
 just test           # go test ./...
 just lint           # go vet + golangci-lint (.golangci.yml: default all, reasoned disables)
